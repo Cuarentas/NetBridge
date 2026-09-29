@@ -1,0 +1,141 @@
+name: Build Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag'
+        required: true
+        default: 'v0.2.1-portable'
+      create_release:
+        description: 'Create Release'
+        required: true
+        default: 'true'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: write
+
+jobs:
+  # ---------- Windows 便携版 (PyInstaller) ----------
+  windows-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PyInstaller
+        run: pip install pyinstaller
+
+      - name: Build portable (onedir)
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name NetBridge --onedir netbridge_gui.py
+
+      - name: Pack zip
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "desktop/dist/NetBridge/*" -DestinationPath "NetBridge-windows-portable.zip" -Force
+          Get-Item NetBridge-windows-portable.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-portable
+          path: NetBridge-windows-portable.zip
+
+  # ---------- Linux (Flutter，可选) ----------
+  linux-flutter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: stable
+          cache: true
+
+      - run: flutter config --enable-linux-desktop
+
+      - name: Build Linux
+        run: |
+          if [ ! -f flutter/lib/main.dart ]; then
+            echo "flutter/lib/main.dart not found, skip"
+            exit 0
+          fi
+          flutter create build_app --project-name netbridge --platforms=linux --org com.netbridge
+          rm -rf build_app/lib
+          mkdir -p build_app/lib
+          cp flutter/lib/main.dart build_app/lib/main.dart
+          cp flutter/pubspec.yaml build_app/pubspec.yaml
+          cd build_app
+          flutter pub get
+          flutter build linux --release
+          for SRC in build/linux/x64/release/bundle build/linux/release/bundle; do
+            if [ -d "$SRC" ]; then
+              tar -czvf ../NetBridge-linux-x64.tar.gz -C "$SRC" .
+              echo "Linux package created"
+              exit 0
+            fi
+          done
+          echo "Linux bundle not found"
+          find build -maxdepth 5 -type d || true
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('NetBridge-linux-x64.tar.gz') != ''
+        with:
+          name: linux-x64
+          path: NetBridge-linux-x64.tar.gz
+
+  # ---------- 发布：等 Windows + Linux 都结束再打包 ----------
+  release:
+    needs: [windows-portable, linux-flutter]
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event.inputs.create_release == 'true' && needs.windows-portable.result == 'success' }}
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List files
+        run: find artifacts -type f -ls
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: NetBridge Portable ${{ github.event.inputs.tag_name }}
+          body: |
+            ## NetBridge 便携版
+
+            ### Windows（推荐）
+            1. 下载 `NetBridge-windows-portable.zip`
+            2. 解压到任意目录
+            3. 双击 **NetBridge.exe**
+
+            不需要安装 Python / Flutter。
+
+            ### Linux
+            1. 下载 `NetBridge-linux-x64.tar.gz`（若有）
+            2. 解压后执行：`chmod +x netbridge && ./netbridge`
+
+            ### 说明
+            - 小火箭风格界面（连接按钮 / 节点列表）
+            - 当前为演示模式（连接状态模拟）
+            - 后续版本将接入 sing-box 真实代理
+          files: artifacts/**/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
