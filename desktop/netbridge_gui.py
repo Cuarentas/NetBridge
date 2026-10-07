@@ -827,11 +827,8 @@ class SystemProxy:
         try:
             if enable:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                # 同时指定 http/https，兼容更多程序
-                winreg.SetValueEx(
-                    key, "ProxyServer", 0, winreg.REG_SZ,
-                    f"http={host}:{port};https={host}:{port};socks={host}:{port}",
-                )
+                # Windows 设置界面需要「地址 + 端口」分离；注册表用 host:port 最兼容
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
                 winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "localhost;127.*;<local>")
             else:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
@@ -990,7 +987,7 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
     kwargs = {"stdout": log_f, "stderr": subprocess.STDOUT, "env": env, **no_window_kwargs()}
     proc = subprocess.Popen(cmd, **kwargs)
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-    time.sleep(1.2)
+    time.sleep(0.8)
     if proc.poll() is not None:
         log_f.close()
         err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-2500:]
@@ -999,18 +996,17 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
 
     port = int(settings.get("mixed_port") or MIXED_PORT)
 
-    # 校验本地端口是否在听
-    import socket
-    ok = False
-    for _ in range(8):
-        try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.4):
-                ok = True
-                break
-        except OSError:
-            time.sleep(0.25)
-    if not ok and log_cb:
-        log_cb(f"警告: 127.0.0.1:{port} 尚未就绪，请稍候或查看日志")
+    # 等待端口就绪（最多约 6 秒）
+    ok = wait_port_open("127.0.0.1", port, tries=24, delay=0.25)
+    if not ok:
+        # 进程还在但端口未开 → 仍报错
+        if proc.poll() is not None:
+            log_f.close()
+            err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-2500:]
+            PID_FILE.unlink(missing_ok=True)
+            raise RuntimeError(f"核心已退出:\n{err}")
+        if log_cb:
+            log_cb(f"警告: 127.0.0.1:{port} 尚未就绪，请稍候或查看日志")
 
     # TUN 失败率高：未开 TUN 时默认开系统代理；开了 TUN 也尽量再开系统代理兜底
     want_proxy = settings.get("system_proxy") or not settings.get("tun")
@@ -1025,24 +1021,34 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
 
 
 
+def wait_port_open(host: str, port: int, tries: int = 20, delay: float = 0.25) -> bool:
+    """等待本地端口开始监听。"""
+    import socket
+    for _ in range(tries):
+        try:
+            with socket.create_connection((host, int(port)), timeout=0.6):
+                return True
+        except OSError:
+            time.sleep(delay)
+    return False
+
+
 def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 10.0) -> tuple[bool, str]:
     """先检测本地端口，再经代理访问外网。"""
     import socket
     import urllib.request
 
-    # 1) 端口是否在听
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=1.5):
-            pass
-    except OSError:
-        return False, f"本地端口 127.0.0.1:{port} 未在监听（核心可能已退出，请看日志）"
+    # 1) 端口是否在听（多等一会，避免刚启动误判）
+    if not wait_port_open("127.0.0.1", port, tries=24, delay=0.25):
+        # 再试 0.0.0.0 映射到本机的情况
+        if not wait_port_open("127.0.0.1", port, tries=8, delay=0.3):
+            return False, f"本地端口 127.0.0.1:{port} 未在监听（核心可能已退出，请看日志）"
 
-    # 2) 经 HTTP 代理访问
+    # 2) 经 HTTP 代理访问（不走环境变量代理，避免套娃）
     url = "http://www.gstatic.com/generate_204"
     proxy = f"http://127.0.0.1:{port}"
     handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
     opener = urllib.request.build_opener(handler)
-    # 避免系统代理套娃
     try:
         with opener.open(url, timeout=timeout) as resp:
             code = getattr(resp, "status", None) or resp.getcode()
@@ -1313,21 +1319,32 @@ class NetBridgeApp(tk.Tk):
 
                 start_core(self.core_var.get(), node, self.settings, log)
                 port = int(self.settings.get("mixed_port") or MIXED_PORT)
+                # 再给端口一点时间
+                wait_port_open("127.0.0.1", port, tries=12, delay=0.25)
                 ok, msg = test_proxy_connectivity(port)
                 if ok:
                     self.status = "connected"
                     self.after(0, lambda m=msg: self.lbl_status.config(text=m))
                 else:
-                    # 核心已起但节点/网络不通
-                    self.status = "error"
-                    self.after(0, lambda m=msg: messagebox.showwarning(
-                        "无法上网",
-                        m + "\n\n请检查：\n"
-                        "1. 是否勾选「系统代理」\n"
-                        "2. 节点是否有效（可换节点）\n"
-                        "3. Windows 代理是否为 127.0.0.1:%d\n"
-                        "4. 可点「日志」查看详情" % port,
-                    ))
+                    # 端口其实已开时：视为已连接，仅提示节点/外网问题
+                    if wait_port_open("127.0.0.1", port, tries=4, delay=0.2):
+                        self.status = "connected"
+                        self.after(0, lambda m=msg: self.lbl_status.config(text="已连接（本地端口正常）。" + m))
+                        self.after(0, lambda m=msg: messagebox.showwarning(
+                            "代理已启动",
+                            "本地端口已在监听，但外网探测未通过。\n\n" + m +
+                            "\n\n请勾选系统代理，或更换节点后再试。",
+                        ))
+                    else:
+                        self.status = "error"
+                        self.after(0, lambda m=msg: messagebox.showwarning(
+                            "无法上网",
+                            m + "\n\n请检查：\n"
+                            "1. 是否勾选「系统代理」\n"
+                            "2. 节点是否有效（可换节点）\n"
+                            "3. Windows 代理是否为 127.0.0.1:%d\n"
+                            "4. 可点「日志」查看详情" % port,
+                        ))
             except Exception as e:
                 self.status = "error"
                 self.after(0, lambda: messagebox.showerror("连接失败", str(e)))
