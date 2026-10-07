@@ -1,0 +1,2 @@
+NetBridge is proprietary software. Source distribution is not licensed as open source.
+See LICENSE for terms.
