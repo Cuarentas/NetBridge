@@ -1,0 +1,332 @@
+name: Build Portable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag'
+        required: true
+        default: 'v1.0.0'
+      create_release:
+        description: 'Create Release'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+permissions:
+  contents: write
+
+env:
+  SINGBOX_VER: '1.11.0'
+  XRAY_VER: '25.3.6'
+  FLUTTER_VERSION: '3.24.5'
+
+jobs:
+  windows-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pyinstaller
+      - name: Download cores and build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop/core/bin | Out-Null
+          $ProgressPreference = 'SilentlyContinue'
+          Invoke-WebRequest -Uri "https://github.com/SagerNet/sing-box/releases/download/v${{ env.SINGBOX_VER }}/sing-box-${{ env.SINGBOX_VER }}-windows-amd64.zip" -OutFile sb.zip
+          Expand-Archive sb.zip sb_out -Force
+          $sb = Get-ChildItem -Recurse sb_out -Filter sing-box.exe | Select-Object -First 1
+          if (-not $sb) { throw "sing-box.exe not found" }
+          Copy-Item $sb.FullName desktop/core/bin/sing-box.exe -Force
+          Invoke-WebRequest -Uri "https://github.com/XTLS/Xray-core/releases/download/v${{ env.XRAY_VER }}/Xray-windows-64.zip" -OutFile xr.zip
+          Expand-Archive xr.zip xr_out -Force
+          $xr = Get-ChildItem -Recurse xr_out -Filter xray.exe | Select-Object -First 1
+          if (-not $xr) { throw "xray.exe not found" }
+          Copy-Item $xr.FullName desktop/core/bin/xray.exe -Force
+          Set-Location desktop
+          pyinstaller --noconfirm --clean --windowed --name NetBridge --onedir netbridge_gui.py
+          if (-not (Test-Path dist/NetBridge/NetBridge.exe)) { throw "PyInstaller output missing" }
+          New-Item -ItemType Directory -Force -Path dist/NetBridge/core/bin | Out-Null
+          Copy-Item core/bin/* dist/NetBridge/core/bin/ -Force
+          Compress-Archive -Path dist/NetBridge/* -DestinationPath ../NetBridge-windows-x64.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: NetBridge-windows-x64.zip
+
+  linux-desktop:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -y && sudo apt-get install -y clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev unzip curl
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter config --enable-linux-desktop
+      - name: Build Linux
+        run: |
+          set -e
+          mkdir -p core_bundle/bin
+          curl -fL -o sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-amd64.tar.gz"
+          tar -xzf sb.tgz
+          find . -name sing-box -type f ! -path './core_bundle/*' | head -1 | xargs -I{} cp {} core_bundle/bin/sing-box
+          curl -fL -o xr.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-64.zip"
+          unzip -qo xr.zip -d xr_out
+          find xr_out -name xray -type f | head -1 | xargs -I{} cp {} core_bundle/bin/xray
+          chmod +x core_bundle/bin/*
+          flutter create build_app --project-name netbridge --platforms=linux --org com.netbridge
+          rm -rf build_app/lib && mkdir -p build_app/lib
+          cp flutter/lib/*.dart build_app/lib/
+          cp flutter/pubspec.yaml build_app/pubspec.yaml
+          (cd build_app && flutter pub get && flutter build linux --release)
+          SRC=$(find build_app/build/linux -type d -path '*/release/bundle' | head -1)
+          test -n "$SRC"
+          cp -a core_bundle "$SRC/core"
+          tar -czvf NetBridge-linux-x64.tar.gz -C "$SRC" .
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: linux-x64
+          path: NetBridge-linux-x64.tar.gz
+
+  macos-desktop:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter config --enable-macos-desktop
+      - name: Build macOS
+        run: |
+          set -e
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then
+            SB="sing-box-${SINGBOX_VER}-darwin-arm64.tar.gz"
+            XR="Xray-macos-arm64-v8a.zip"
+          else
+            SB="sing-box-${SINGBOX_VER}-darwin-amd64.tar.gz"
+            XR="Xray-macos-64.zip"
+          fi
+          mkdir -p core_bundle/bin
+          curl -fL -o sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/$SB"
+          tar -xzf sb.tgz
+          find . -name sing-box -type f ! -path './core_bundle/*' | head -1 | xargs -I{} cp {} core_bundle/bin/sing-box
+          curl -fL -o xr.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/$XR"
+          unzip -qo xr.zip -d xr_out
+          find xr_out -name xray -type f | head -1 | xargs -I{} cp {} core_bundle/bin/xray
+          chmod +x core_bundle/bin/*
+
+          flutter create build_app --project-name netbridge --platforms=macos --org com.netbridge
+          rm -rf build_app/lib && mkdir -p build_app/lib
+          cp flutter/lib/*.dart build_app/lib/
+          cp flutter/pubspec.yaml build_app/pubspec.yaml
+          mkdir -p build_app/macos/Runner
+          cp macos_native/VpnPlugin.swift build_app/macos/Runner/VpnPlugin.swift || true
+
+          (cd build_app && flutter pub get && flutter build macos --release)
+
+          # 使用绝对路径，避免 cd 后相对路径失效
+          APP=$(find "$PWD/build_app/build/macos" -name "*.app" -type d | head -1)
+          echo "APP=$APP"
+          test -n "$APP"
+          test -d "$APP"
+
+          mkdir -p "$APP/Contents/Resources/core/bin"
+          cp core_bundle/bin/* "$APP/Contents/Resources/core/bin/"
+
+          rm -rf macos_out
+          mkdir -p macos_out
+          cp -a "$APP" macos_out/
+          cp -a core_bundle macos_out/core
+          (cd macos_out && zip -r ../NetBridge-macos.zip .)
+          ls -lh NetBridge-macos.zip
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: macos
+          path: NetBridge-macos.zip
+
+  android-apk:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build APK
+        run: |
+          set -e
+          flutter create build_app --project-name netbridge --platforms=android --org com.netbridge
+          rm -rf build_app/lib && mkdir -p build_app/lib
+          cp flutter/lib/*.dart build_app/lib/
+          cp flutter/pubspec.yaml build_app/pubspec.yaml
+
+          mkdir -p build_app/android/app/src/main/assets/core
+          set +e
+          curl -fL -o sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-android-arm64.tar.gz" \
+            || curl -fL -o sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v${SINGBOX_VER}/sing-box-${SINGBOX_VER}-linux-arm64.tar.gz"
+          if [ -f sb.tgz ]; then
+            tar -xzf sb.tgz
+            find . -name sing-box -type f ! -path './build_app/*' | head -1 | xargs -I{} cp {} build_app/android/app/src/main/assets/core/sing-box
+          fi
+          curl -fL -o xr.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-android-arm64-v8a.zip" \
+            || curl -fL -o xr.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VER}/Xray-linux-arm64-v8a.zip"
+          if [ -f xr.zip ]; then
+            unzip -qo xr.zip -d xr_out
+            find xr_out -name xray -type f | head -1 | xargs -I{} cp {} build_app/android/app/src/main/assets/core/xray
+          fi
+          chmod +x build_app/android/app/src/main/assets/core/* 2>/dev/null || true
+          set -e
+
+          PKG=build_app/android/app/src/main/kotlin/com/netbridge/netbridge
+          mkdir -p "$PKG"
+          cp android_native/MainActivity.kt "$PKG/"
+          cp android_native/VpnPlugin.kt "$PKG/"
+          cp android_native/NetBridgeVpnService.kt "$PKG/"
+
+          find build_app/android \( -name 'MainActivity.kt' -o -name 'MainActivity.java' \) | while read -r f; do
+            case "$f" in
+              */com/netbridge/netbridge/MainActivity.kt) ;;
+              *) rm -f "$f" ;;
+            esac
+          done
+
+          MANIFEST=build_app/android/app/src/main/AndroidManifest.xml
+          if ! grep -q 'android.permission.INTERNET' "$MANIFEST"; then
+            sed -i '0,/<application/{s|<application|    <uses-permission android:name="android.permission.INTERNET"/>\n    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>\n    <application|}' "$MANIFEST"
+          fi
+          if ! grep -q 'usesCleartextTraffic' "$MANIFEST"; then
+            sed -i 's|<application |<application android:usesCleartextTraffic="true" |' "$MANIFEST"
+          fi
+          if ! grep -q 'NetBridgeVpnService' "$MANIFEST"; then
+            sed -i 's|</application>|        <service android:name=".NetBridgeVpnService" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE"><intent-filter><action android:name="android.net.VpnService"/></intent-filter></service>\n    </application>|' "$MANIFEST"
+          fi
+
+          (cd build_app && flutter pub get && flutter build apk --release)
+          cp build_app/build/app/outputs/flutter-apk/app-release.apk NetBridge-android.apk
+          ls -lh NetBridge-android.apk
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: android-apk
+          path: NetBridge-android.apk
+
+  ios-unsigned:
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Build iOS
+        run: |
+          set -e
+          flutter create build_app --project-name netbridge --platforms=ios --org com.netbridge
+          rm -rf build_app/lib && mkdir -p build_app/lib
+          cp flutter/lib/*.dart build_app/lib/
+          cp flutter/pubspec.yaml build_app/pubspec.yaml
+          mkdir -p build_app/ios/Runner build_app/ios/Tunnel
+          cp ios_native/AppVpnPlugin.swift build_app/ios/Runner/ || true
+          cp ios_native/PacketTunnelProvider.swift build_app/ios/Tunnel/ || true
+          echo "iOS unsigned: sign with Xcode before install." > IOS_VPN_README.txt
+          (cd build_app && flutter pub get && flutter build ios --release --no-codesign)
+          APP=$(find "$PWD/build_app/build/ios" -name "*.app" -type d | head -1)
+          echo "APP=$APP"
+          test -n "$APP"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -a "$APP" Payload/
+          zip -r NetBridge-ios.ipa Payload
+          zip -j NetBridge-ios.zip NetBridge-ios.ipa IOS_VPN_README.txt
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: ios
+          path: NetBridge-ios.zip
+
+  release:
+    needs:
+      - windows-portable
+      - linux-desktop
+      - macos-desktop
+      - android-apk
+      - ios-unsigned
+    runs-on: ubuntu-latest
+    if: ${{ always() && github.event.inputs.create_release == 'true' && needs.windows-portable.result == 'success' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+        continue-on-error: true
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release_files
+          find artifacts -type f -print0 | while IFS= read -r -d '' f; do
+            cp -f "$f" "release_files/$(basename "$f")"
+          done
+          ls -la release_files || true
+
+      - name: Delete old assets on same tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag_name }}
+        run: |
+          set +e
+          # 若该 tag 已有 Release，删除其全部旧附件（避免 portable / unsigned 等残留）
+          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq '.id' 2>/dev/null)
+          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
+            echo "Found existing release id=$RELEASE_ID for tag $TAG"
+            ASSETS=$(gh api "repos/${{ github.repository }}/releases/${RELEASE_ID}/assets" --jq '.[].id' 2>/dev/null)
+            for id in $ASSETS; do
+              echo "Deleting asset id=$id"
+              gh api -X DELETE "repos/${{ github.repository }}/releases/assets/${id}" || true
+            done
+          else
+            echo "No existing release for tag $TAG (will create new)"
+          fi
+          set -e
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: NetBridge ${{ github.event.inputs.tag_name }}
+          body: |
+            ## NetBridge ${{ github.event.inputs.tag_name }}
+
+            | Platform | File |
+            |----------|------|
+            | Windows | NetBridge-windows-x64.zip |
+            | Linux | NetBridge-linux-x64.tar.gz |
+            | macOS | NetBridge-macos.zip |
+            | Android | NetBridge-android.apk |
+            | iOS | NetBridge-ios.zip |
+          files: release_files/*
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
