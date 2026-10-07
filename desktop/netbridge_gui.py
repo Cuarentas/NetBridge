@@ -1124,6 +1124,21 @@ def batch_test_nodes(nodes: list[dict], workers: int = 20) -> list[dict]:
     return nodes
 
 
+def sort_nodes_by_latency(nodes: list[dict]) -> list[dict]:
+    """按延迟从低到高排序；超时/失败在后，未测试更后。"""
+    def key(n):
+        if not n.get("server"):
+            return (3, 10**9, "")
+        ms = n.get("latency_ms")
+        if ms is None:
+            return (2, 10**9, n.get("name") or "")
+        if not isinstance(ms, int) or ms < 0:
+            return (1, 10**9, n.get("name") or "")
+        return (0, ms, n.get("name") or "")
+    nodes.sort(key=key)
+    return nodes
+
+
 # ===================== GUI =====================
 class NetBridgeApp(tk.Tk):
     def __init__(self):
@@ -1369,20 +1384,8 @@ class NetBridgeApp(tk.Tk):
     def _render_node_rows(self, frame, win):
         for w in frame.winfo_children():
             w.destroy()
-        # 按延迟排序展示（未测的靠后）
-        order = list(range(len(self.nodes)))
-        def sort_key(i):
-            n = self.nodes[i]
-            if not n.get("server"):
-                return (2, 999999)
-            ms = n.get("latency_ms")
-            if ms is None:
-                return (1, 999999)
-            if ms < 0:
-                return (1, 999998)
-            return (0, ms)
-        order.sort(key=sort_key)
-        for i in order:
+        # 列表顺序与 self.nodes 一致（测试后已按延迟从低到高排列）
+        for i in range(len(self.nodes)):
             n = self.nodes[i]
             if not n.get("server"):
                 continue
@@ -1444,15 +1447,19 @@ class NetBridgeApp(tk.Tk):
 
         def work():
             batch_test_nodes(self.nodes, workers=20)
+            # 记住当前选中节点，排序后恢复索引
+            cur_id = id(self.current_node()) if self.nodes else None
+            sort_nodes_by_latency(self.nodes)
+            if cur_id is not None:
+                for i, n in enumerate(self.nodes):
+                    if id(n) == cur_id:
+                        self.current_index = i
+                        break
+            else:
+                self.current_index = 0
             self._persist_nodes()
-            # 对延迟最低的前 5 个做当前核心下的粗测速（需已连接时用本地代理；未连接则跳过测速）
-            ranked = sorted(
-                [n for n in self.nodes if isinstance(n.get("latency_ms"), int) and n["latency_ms"] > 0],
-                key=lambda x: x["latency_ms"],
-            )[:5]
             port = int(self.settings.get("mixed_port") or MIXED_PORT)
             if self.status == "connected":
-                # 仅测当前节点速度（避免频繁切换核心）
                 cur = self.current_node()
                 kbps, msg = measure_download_speed(port)
                 cur["speed_kbps"] = kbps
@@ -1482,17 +1489,8 @@ class NetBridgeApp(tk.Tk):
 
         def work():
             batch_test_nodes(self.nodes, workers=20)
-            # 若已连接，顺便测当前节点下载速度
-            msg_spd = ""
-            if self.status == "connected":
-                port = int(self.settings.get("mixed_port") or MIXED_PORT)
-                kbps, msg = measure_download_speed(port)
-                cur = self.current_node()
-                cur["speed_kbps"] = kbps
-                cur["speed_msg"] = msg
-                msg_spd = f" · 当前节点 {msg}"
-            self._persist_nodes()
-            # 自动选中延迟最低的可用节点
+            sort_nodes_by_latency(self.nodes)
+            # 自动选中延迟最低的可用节点（排序后一般为 index 0）
             best_i = None
             best_ms = 10**9
             for i, n in enumerate(self.nodes):
@@ -1502,6 +1500,17 @@ class NetBridgeApp(tk.Tk):
                     best_i = i
             if best_i is not None:
                 self.current_index = best_i
+            else:
+                self.current_index = 0
+            msg_spd = ""
+            if self.status == "connected":
+                port = int(self.settings.get("mixed_port") or MIXED_PORT)
+                kbps, msg = measure_download_speed(port)
+                cur = self.current_node()
+                cur["speed_kbps"] = kbps
+                cur["speed_msg"] = msg
+                msg_spd = f" · 当前节点 {msg}"
+            self._persist_nodes()
 
             def done():
                 ok_n = sum(1 for n in self.nodes if isinstance(n.get("latency_ms"), int) and n["latency_ms"] > 0)
