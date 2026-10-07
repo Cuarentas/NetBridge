@@ -1033,7 +1033,7 @@ def wait_port_open(host: str, port: int, tries: int = 20, delay: float = 0.25) -
     return False
 
 
-def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 10.0) -> tuple[bool, str]:
+def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 5.0) -> tuple[bool, str]:
     """先检测本地端口，再经代理访问外网。"""
     import socket
     import urllib.request
@@ -1302,6 +1302,13 @@ class NetBridgeApp(tk.Tk):
             self._refresh()
             return
         if self.status == "connecting":
+            # 允许取消卡住的连接中状态
+            try:
+                stop_core()
+            except Exception:
+                pass
+            self.status = "disconnected"
+            self._refresh()
             return
         node = self.current_node()
         if not node.get("server"):
@@ -1313,42 +1320,49 @@ class NetBridgeApp(tk.Tk):
         self._refresh()
 
         def work():
+            port = int(self.settings.get("mixed_port") or MIXED_PORT)
             try:
                 def log(msg):
                     self.after(0, lambda m=msg: self.lbl_status.config(text=m))
 
                 start_core(self.core_var.get(), node, self.settings, log)
-                port = int(self.settings.get("mixed_port") or MIXED_PORT)
-                # 再给端口一点时间
-                wait_port_open("127.0.0.1", port, tries=12, delay=0.25)
-                ok, msg = test_proxy_connectivity(port)
-                if ok:
+
+                # 端口就绪即显示已连接，外网探测放到后台，避免一直「连接中」
+                if wait_port_open("127.0.0.1", port, tries=20, delay=0.25):
                     self.status = "connected"
-                    self.after(0, lambda m=msg: self.lbl_status.config(text=m))
+                    self.after(0, lambda: self.lbl_status.config(
+                        text=f"已连接 · 127.0.0.1:{port}"
+                    ))
+                    self.after(0, self._refresh)
+
+                    def probe():
+                        try:
+                            ok, msg = test_proxy_connectivity(port, timeout=5.0)
+                        except Exception as e:
+                            ok, msg = False, str(e)
+
+                        def ui():
+                            if self.status != "connected":
+                                return
+                            if ok:
+                                self.lbl_status.config(text=msg)
+                            else:
+                                self.lbl_status.config(text="已连接。外网探测: " + msg)
+                        self.after(0, ui)
+
+                    threading.Thread(target=probe, daemon=True).start()
                 else:
-                    # 端口其实已开时：视为已连接，仅提示节点/外网问题
-                    if wait_port_open("127.0.0.1", port, tries=4, delay=0.2):
-                        self.status = "connected"
-                        self.after(0, lambda m=msg: self.lbl_status.config(text="已连接（本地端口正常）。" + m))
-                        self.after(0, lambda m=msg: messagebox.showwarning(
-                            "代理已启动",
-                            "本地端口已在监听，但外网探测未通过。\n\n" + m +
-                            "\n\n请勾选系统代理，或更换节点后再试。",
-                        ))
-                    else:
-                        self.status = "error"
-                        self.after(0, lambda m=msg: messagebox.showwarning(
-                            "无法上网",
-                            m + "\n\n请检查：\n"
-                            "1. 是否勾选「系统代理」\n"
-                            "2. 节点是否有效（可换节点）\n"
-                            "3. Windows 代理是否为 127.0.0.1:%d\n"
-                            "4. 可点「日志」查看详情" % port,
-                        ))
+                    self.status = "error"
+                    self.after(0, lambda: messagebox.showwarning(
+                        "无法上网",
+                        f"本地端口 127.0.0.1:{port} 未在监听，请查看日志。",
+                    ))
+                    self.after(0, self._refresh)
             except Exception as e:
                 self.status = "error"
-                self.after(0, lambda: messagebox.showerror("连接失败", str(e)))
-            self.after(0, self._refresh)
+                err = str(e)
+                self.after(0, lambda m=err: messagebox.showerror("连接失败", m))
+                self.after(0, self._refresh)
 
         threading.Thread(target=work, daemon=True).start()
 
