@@ -49,6 +49,16 @@ jobs:
           if (-not $xr) { throw "xray.exe not found" }
           Copy-Item $xr.FullName desktop/core/bin/xray.exe -Force
           Set-Location desktop
+
+          # 将本次发版 tag 写入 APP_VERSION，与 Release / 徽章一致
+          $tag = "${{ github.event.inputs.tag_name }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) { $tag = "1.0.0" }
+          $ver = $tag -replace '^v',''
+          $gui = "netbridge_gui.py"
+          if (Test-Path $gui) {
+            (Get-Content $gui -Raw) -replace 'APP_VERSION\s*=\s*"[^"]*"', ("APP_VERSION = `"$ver`"") | Set-Content $gui -NoNewline
+            Write-Host "APP_VERSION set to $ver"
+          }
           pyinstaller --noconfirm --clean --windowed --name NetBridge --icon netbridge.ico --onedir --hidden-import pystray --hidden-import PIL --hidden-import PIL.Image --hidden-import pystray._native_windows netbridge_gui.py
           if (-not (Test-Path dist/NetBridge/NetBridge.exe)) { throw "PyInstaller output missing" }
           New-Item -ItemType Directory -Force -Path dist/NetBridge/core/bin | Out-Null
