@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/NetBridge-1.0.0-007AFF?style=for-the-badge" alt="NetBridge" />
+  <img src="https://img.shields.io/badge/NetBridge-1.0.1-007AFF?style=for-the-badge" alt="NetBridge" />
 </p>
 
 <h1 align="center">NetBridge</h1>
@@ -48,7 +48,7 @@
 | Android | `NetBridge-android.apk` | 允许未知来源后安装 |
 | iOS | `NetBridge-ios.zip` | 未签名，需自行用开发者证书签名 |
 
-> 默认本地混合代理端口：**1314**
+> 默认本地混合代理端口：**7890**
 
 ---
 
@@ -62,7 +62,7 @@
 
 可选：
 
-- **允许局域网连接** → 其它设备可使用 `本机IP:1314`
+- **允许局域网连接** → 其它设备可使用 `本机IP:7890`
 - **测试** → 多线程测延迟并优选节点
 - **日志** → 调整等级并查看 `core.log`
 
@@ -101,5 +101,5 @@ Copyright (c) 2026 NetBridge Authors. All Rights Reserved.
 ---
 
 <p align="center">
-  <sub>NetBridge 1.0.0 · All Rights Reserved</sub>
+  <sub>NetBridge 1.0.1 · All Rights Reserved</sub>
 </p>
