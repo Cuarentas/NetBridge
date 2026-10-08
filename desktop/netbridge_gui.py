@@ -65,7 +65,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.1.7"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -261,6 +261,24 @@ def _plat() -> tuple[str, str]:
     return "linux", arch
 
 
+
+def asset_path(*names: str) -> Path | None:
+    """查找资源：优先 assets/ 子目录，再程序目录。"""
+    bases = []
+    if getattr(sys, "frozen", False):
+        bases.append(Path(sys.executable).resolve().parent)
+        bases.append(Path(sys.executable).resolve().parent / "assets")
+    bases.append(Path(__file__).resolve().parent)
+    bases.append(Path(__file__).resolve().parent / "assets")
+    bases.append(ROOT)
+    bases.append(ROOT / "assets")
+    for b in bases:
+        for n in names:
+            c = b / n
+            if c.is_file():
+                return c
+    return None
+
 def is_windows() -> bool:
     return platform.system().lower() == "windows"
 
@@ -321,36 +339,41 @@ def download_singbox(log=None) -> Path:
 
 
 
-def ensure_xray_geo(log=None):
-    """下载 Xray 用 geoip/geosite（规则分流 geoip:cn / geosite:cn）。"""
-    base = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
-    # use official xray-rules or v2fly
+def ensure_xray_geo(log=None, timeout: float = 8.0):
+    """可选下载 geo 数据。失败/超时不阻塞连接（已有域名分流回退）。"""
     files = {
         "geoip.dat": "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
         "geosite.dat": "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
     }
+    ok = False
     for name, url in files.items():
         dest = BIN_DIR / name
         if dest.exists() and dest.stat().st_size > 10000:
+            ok = True
             continue
         try:
             if log:
-                log(f"下载 {name} ...")
+                log(f"可选下载 {name}（最多 {int(timeout)}s，失败可跳过）...")
             req = urllib.request.Request(url, headers={"User-Agent": f"NetBridge/{APP_VERSION}"})
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                dest.write_bytes(resp.read())
-            # geosite filename
-            if name == "geosite.dat" and dest.exists():
-                pass
-            elif name == "geosite.dat":
-                pass
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+            if len(data) > 10000:
+                dest.write_bytes(data)
+                ok = True
         except Exception as e:
             if log:
-                log(f"{name} 下载失败: {e}")
-    # dlc.dat should be geosite.dat
-    dlc = BIN_DIR / "geosite.dat"
-    # already saved as geosite.dat
-    return dlc.exists() or (BIN_DIR / "geoip.dat").exists()
+                log(f"{name} 跳过: {e}")
+    return ok
+
+
+def ensure_xray_geo_async(log=None):
+    """后台下载 geo，不阻塞 start_core。"""
+    def work():
+        try:
+            ensure_xray_geo(log, timeout=15.0)
+        except Exception:
+            pass
+    threading.Thread(target=work, daemon=True).start()
 
 
 def download_xray(log=None) -> Path:
@@ -1389,8 +1412,9 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
         if settings.get("tun") and log_cb:
             log_cb("TUN 目前仅 sing-box 支持，已忽略 TUN")
         binary = download_xray(log_cb)
+        # geo 不阻塞连接；已有 domain 规则回退
         try:
-            ensure_xray_geo(log_cb)
+            ensure_xray_geo_async(log_cb)
         except Exception:
             pass
         cfg = build_xray_config(node, settings)
@@ -1601,14 +1625,9 @@ def sort_nodes_by_latency(nodes: list[dict]) -> list[dict]:
 
 def make_tray_image():
     """托盘图标：优先使用应用图标文件。"""
-    for c in (
-        Path(__file__).resolve().parent / "netbridge_tray.png",
-        Path(__file__).resolve().parent / "netbridge.png",
-        Path(sys.executable).resolve().parent / "netbridge_tray.png" if getattr(sys, "frozen", False) else None,
-        Path(sys.executable).resolve().parent / "netbridge.png" if getattr(sys, "frozen", False) else None,
-        ROOT / "netbridge.png",
-    ):
-        if c and Path(c).is_file():
+    for name in ("netbridge_tray.png", "netbridge.png"):
+        c = asset_path(name)
+        if c:
             try:
                 return Image.open(c).convert("RGBA").resize((64, 64))
             except Exception:
@@ -1692,29 +1711,21 @@ class NetBridgeApp(tk.Tk):
 
 
     def _set_window_icon(self):
-        for c in (
-            Path(__file__).resolve().parent / "netbridge.ico",
-            ROOT / "netbridge.ico",
-            Path(sys.executable).resolve().parent / "netbridge.ico" if getattr(sys, "frozen", False) else None,
-        ):
-            if c and Path(c).is_file():
-                try:
-                    self.iconbitmap(default=str(c))
-                    return
-                except Exception:
-                    pass
-        for c in (
-            Path(__file__).resolve().parent / "netbridge.png",
-            ROOT / "netbridge.png",
-        ):
-            if c and Path(c).is_file():
-                try:
-                    img = tk.PhotoImage(file=str(c))
-                    self.iconphoto(True, img)
-                    self._icon_img = img
-                    return
-                except Exception:
-                    pass
+        ico = asset_path("netbridge.ico")
+        if ico:
+            try:
+                self.iconbitmap(default=str(ico))
+                return
+            except Exception:
+                pass
+        png = asset_path("netbridge.png")
+        if png:
+            try:
+                img = tk.PhotoImage(file=str(png))
+                self.iconphoto(True, img)
+                self._icon_img = img
+            except Exception:
+                pass
 
     def _fs(self, base=10):
         try:
@@ -1789,12 +1800,8 @@ class NetBridgeApp(tk.Tk):
             w = max(self.winfo_width(), 460)
             h = max(self.winfo_height(), 760)
             # prefer asset
-            path = Path(__file__).resolve().parent / "bg_gradient.png"
-            if getattr(sys, "frozen", False):
-                p2 = Path(sys.executable).resolve().parent / "bg_gradient.png"
-                if p2.is_file():
-                    path = p2
-            if path.is_file():
+            path = asset_path("bg_gradient.png")
+            if path and path.is_file():
                 from PIL import Image as _Image
                 img = _Image.open(path).convert("RGB").resize((w, h))
             else:
@@ -2124,8 +2131,9 @@ class NetBridgeApp(tk.Tk):
             pass
         try:
             if hasattr(self, "btn_disconnect"):
-                st = "normal" if self.status == "connected" else "disabled"
-                self.btn_disconnect.configure(state=st)
+                # 连接中/已连接都可断开
+                st = "normal" if self.status in ("connected", "connecting", "error") else "normal"
+                self.btn_disconnect.configure(state="normal")
         except Exception:
             pass
         port = self.settings.get("mixed_port", MIXED_PORT)
@@ -2153,17 +2161,28 @@ class NetBridgeApp(tk.Tk):
             self.lbl_status.config(text=f"订阅/WS/gRPC/Reality · 系统代理/TUN · {tip}")
 
     def _disconnect(self):
-        """断开连接并关闭系统代理。"""
+        """断开连接并关闭系统代理（随时可点，含连接中）。"""
         try:
             stop_core()
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                self.lbl_status.config(text=f"断开时: {e}")
+            except Exception:
+                pass
         self.status = "disconnected"
         try:
             self._stop_connect_anim()
         except Exception:
             pass
-        self.lbl_status.config(text="已断开连接")
+        try:
+            self.lbl_status.config(text="已断开连接")
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "btn_disconnect"):
+                self.btn_disconnect.configure(state="normal")
+        except Exception:
+            pass
         self._refresh()
 
     def _toggle(self):
@@ -2539,22 +2558,61 @@ class NetBridgeApp(tk.Tk):
         tk.Button(win, text="保存", command=save, padx=16, pady=6).pack(pady=8)
 
     def _show_log(self):
+        # 单例：已打开则前置刷新，不重复开窗
+        w = getattr(self, "_log_win", None)
+        if w is not None:
+            try:
+                if w.winfo_exists():
+                    w.deiconify()
+                    w.lift()
+                    w.focus_force()
+                    self._fill_log_text()
+                    return
+            except Exception:
+                pass
         win = tk.Toplevel(self)
+        self._log_win = win
         win.title("日志 / 路径")
-        win.geometry("520x420")
+        win.geometry("560x460")
+        try:
+            win.configure(bg=BG)
+        except Exception:
+            pass
         txt = scrolledtext.ScrolledText(win, font=("Consolas", 9))
         txt.pack(fill="both", expand=True)
-        info = (
-            f"核心目录: {BIN_DIR}\n"
-            f"配置: {CONFIG_FILE}\n"
-            f"日志: {LOG_FILE}\n"
-            f"节点: {NODES_FILE}\n\n"
-            "--- core.log ---\n"
-        )
-        txt.insert("end", info)
-        if LOG_FILE.exists():
-            txt.insert("end", LOG_FILE.read_text(encoding="utf-8", errors="replace")[-5000:])
-        txt.config(state="disabled")
+        self._log_text = txt
+        self._fill_log_text()
+
+        def on_close():
+            self._log_win = None
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", on_close)
+
+    def _fill_log_text(self):
+        txt = getattr(self, "_log_text", None)
+        if txt is None:
+            return
+        try:
+            txt.config(state="normal")
+            txt.delete("1.0", "end")
+            info = (
+                f"核心目录: {BIN_DIR}\n"
+                f"配置: {CONFIG_FILE}\n"
+                f"日志: {LOG_FILE}\n"
+                f"节点: {NODES_FILE}\n\n"
+                "--- core.log ---\n"
+            )
+            txt.insert("end", info)
+            if LOG_FILE.exists():
+                txt.insert("end", LOG_FILE.read_text(encoding="utf-8", errors="replace")[-8000:])
+            txt.config(state="disabled")
+        except Exception:
+            pass
+
 
     def _setup_tray(self):
         """初始化系统托盘（右下角图标）。"""
