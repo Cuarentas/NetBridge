@@ -65,7 +65,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -998,11 +998,14 @@ def _xray_stream(node: dict) -> dict:
 
     if net in ("ws", "websocket"):
         stream["network"] = "ws"
-        ws: dict = {"path": node.get("path") or "/"}
-        # Xray 25+：使用独立 host，避免 headers.Host 弃用警告
-        host = node.get("host") or node.get("sni") or ""
+        path = node.get("path") or "/"
+        if path and not str(path).startswith("/"):
+            path = "/" + str(path)
+        ws: dict = {"path": path}
+        host = (node.get("host") or node.get("sni") or "").strip()
         if host:
             ws["host"] = host
+            ws["headers"] = {"Host": host}
         stream["wsSettings"] = ws
     elif net == "grpc":
         stream["network"] = "grpc"
@@ -1139,14 +1142,24 @@ def build_xray_config(node: dict, settings: dict) -> dict:
         xray_level = "info"
     return {
         "log": {"loglevel": xray_level},
-        "inbounds": [{
-            "tag": "mixed-in",
-            "port": port,
-            "listen": listen,
-            "protocol": "mixed",
-            "settings": {"udp": True},
-            "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
-        }],
+        "inbounds": [
+            {
+                "tag": "http-in",
+                "port": port,
+                "listen": listen,
+                "protocol": "http",
+                "settings": {"allowTransparent": False},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": False},
+            },
+            {
+                "tag": "socks-in",
+                "port": port + 1,
+                "listen": listen,
+                "protocol": "socks",
+                "settings": {"udp": True},
+                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": False},
+            },
+        ],
         "outbounds": [
             outbound,
             {"tag": "direct", "protocol": "freedom"},
@@ -1191,6 +1204,47 @@ def _xray_routing(mode: str) -> dict:
 
 
 # ===================== system proxy =====================
+
+def write_proxy_pac(port: int, route_mode: str = "bypass_cn") -> Path:
+    """生成 PAC：国内直连、国外走本地代理（比 ProxyOverride 更可靠）。"""
+    ensure_dirs()
+    pac = RUNTIME / "proxy.pac"
+    if route_mode == "global":
+        body = (
+            "function FindProxyForURL(url, host) {\n"
+            "  if (isPlainHostName(host) || host === \"127.0.0.1\" || host === \"localhost\") return \"DIRECT\";\n"
+            f"  return \"PROXY 127.0.0.1:{port}; DIRECT\";\n"
+            "}\n"
+        )
+    elif route_mode == "direct":
+        body = "function FindProxyForURL(url, host) { return \"DIRECT\"; }\n"
+    else:
+        patterns = [
+            "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
+            "*.baidu.com", "*.bdstatic.com", "*.qq.com", "*.gtimg.com", "*.tencent.com",
+            "*.douyin.com", "*.byteimg.com", "*.bytedance.com", "*.snssdk.com", "*.toutiao.com",
+            "*.iqiyi.com", "*.qy.net", "*.youku.com", "*.ykimg.com",
+            "*.bilibili.com", "*.hdslb.com", "*.zhihu.com", "*.weibo.com",
+            "*.taobao.com", "*.tmall.com", "*.alicdn.com", "*.aliyun.com", "*.alipay.com",
+            "*.163.com", "*.126.com", "*.jd.com", "*.360.com", "*.360.cn",
+            "*.mi.com", "*.xiaomi.com", "*.microsoft.com", "*.windowsupdate.com",
+            "*.apple.com", "*.icloud.com", "*.msftconnecttest.com",
+        ]
+        checks = " ||\n    ".join([f'shExpMatch(host, "{p}")' for p in patterns])
+        body = (
+            "function FindProxyForURL(url, host) {\n"
+            "  if (isPlainHostName(host) || host === \"127.0.0.1\" || host === \"localhost\") return \"DIRECT\";\n"
+            "  if (isInNet(dnsResolve(host), \"10.0.0.0\", \"255.0.0.0\") ||\n"
+            "      isInNet(dnsResolve(host), \"192.168.0.0\", \"255.255.0.0\") ||\n"
+            "      isInNet(dnsResolve(host), \"172.16.0.0\", \"255.240.0.0\")) return \"DIRECT\";\n"
+            f"  if ({checks}) return \"DIRECT\";\n"
+            f"  return \"PROXY 127.0.0.1:{port}; DIRECT\";\n"
+            "}\n"
+        )
+    pac.write_text(body, encoding="utf-8")
+    return pac
+
+
 class SystemProxy:
     """Best-effort system HTTP(S) proxy. TUN is handled by core config."""
 
@@ -1238,12 +1292,25 @@ class SystemProxy:
         )
         try:
             if enable:
-                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                # Windows 设置界面需要「地址 + 端口」分离；注册表用 host:port 最兼容
-                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
-                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
+                if route_mode in ("bypass_cn", "global"):
+                    pac = write_proxy_pac(port, route_mode)
+                    pac_url = "file:///" + str(pac.resolve()).replace("\\", "/")
+                    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                    winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, pac_url)
+                    winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
+                    winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
+                else:
+                    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                    try:
+                        winreg.DeleteValue(key, "AutoConfigURL")
+                    except Exception:
+                        pass
             else:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+                try:
+                    winreg.DeleteValue(key, "AutoConfigURL")
+                except Exception:
+                    pass
         finally:
             winreg.CloseKey(key)
         try:
