@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/NetBridge-1.0.1-007AFF?style=for-the-badge" alt="NetBridge" />
+  <img src="https://img.shields.io/badge/NetBridge-1.1.0-007AFF?style=for-the-badge" alt="NetBridge" />
 </p>
 
 <h1 align="center">NetBridge</h1>
@@ -101,5 +101,5 @@ Copyright (c) 2026 NetBridge Authors. All Rights Reserved.
 ---
 
 <p align="center">
-  <sub>NetBridge 1.0.1 · All Rights Reserved</sub>
+  <sub>NetBridge 1.1.0 · All Rights Reserved</sub>
 </p>
