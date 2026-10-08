@@ -115,6 +115,7 @@ DEFAULT_SETTINGS = {
     "font_size": 10,
     "auto_update_check": True,
     "group_filter": "全部",
+    "route_mode": "bypass_cn",  # bypass_cn | global | direct
 }
 
 
@@ -378,6 +379,39 @@ def download_singbox(log=None) -> Path:
         return p
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+def ensure_xray_geo(log=None):
+    """下载 Xray 用 geoip/geosite（规则分流 geoip:cn / geosite:cn）。"""
+    base = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+    # use official xray-rules or v2fly
+    files = {
+        "geoip.dat": "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat",
+        "geosite.dat": "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+    }
+    for name, url in files.items():
+        dest = BIN_DIR / name
+        if dest.exists() and dest.stat().st_size > 10000:
+            continue
+        try:
+            if log:
+                log(f"下载 {name} ...")
+            req = urllib.request.Request(url, headers={"User-Agent": f"NetBridge/{APP_VERSION}"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                dest.write_bytes(resp.read())
+            # geosite filename
+            if name == "geosite.dat" and dest.exists():
+                pass
+            elif name == "geosite.dat":
+                pass
+        except Exception as e:
+            if log:
+                log(f"{name} 下载失败: {e}")
+    # dlc.dat should be geosite.dat
+    dlc = BIN_DIR / "geosite.dat"
+    # already saved as geosite.dat
+    return dlc.exists() or (BIN_DIR / "geoip.dat").exists()
 
 
 def download_xray(log=None) -> Path:
@@ -693,6 +727,30 @@ def fetch_subscription(url: str, timeout: int = 20) -> list[dict]:
     return parse_subscription_content(text)
 
 
+
+# 精简版国内域名后缀（无 geo 文件时的回退规则，对齐常见客户端「绕过大陆」）
+CN_DOMAIN_SUFFIX = [
+    "cn", "baidu.com", "qq.com", "weixin.qq.com", "gtimg.com", "qcloud.com",
+    "aliyun.com", "alicdn.com", "taobao.com", "tmall.com", "alipay.com",
+    "jd.com", "360buyimg.com", "163.com", "126.com", "yeah.net",
+    "sina.com.cn", "weibo.com", "bilibili.com", "hdslb.com", "zhihu.com",
+    "douyin.com", "bytedance.com", "byteimg.com", "iqiyi.com", "youku.com",
+    "microsoft.com", "windows.net", "live.com", "office.com", "msftconnecttest.com",
+    "apple.com", "icloud.com", "cdn-apple.com", "mzstatic.com",
+    "huawei.com", "honor.com", "mi.com", "xiaomi.com", "miui.com",
+    "360.cn", "qy.net", "csdn.net", "oschina.net", "gitee.com",
+    "douban.com", "acfun.cn", "iqiyi.com", "pptv.com", "mgtv.com",
+    "cctv.com", "gov.cn", "edu.cn", "org.cn", "com.cn", "net.cn",
+]
+
+
+def _route_mode(settings: dict) -> str:
+    m = (settings.get("route_mode") or "bypass_cn").lower()
+    if m in ("bypass_cn", "global", "direct"):
+        return m
+    return "bypass_cn"
+
+
 # ===================== config builders (WS/gRPC/Reality) =====================
 
 def normalize_node(node: dict) -> dict:
@@ -899,10 +957,7 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
             outbound,
             {"type": "direct", "tag": "direct"},
         ],
-        "route": {
-            "auto_detect_interface": True,
-            "final": "proxy",
-        },
+        "route": _singbox_route(_route_mode(settings)),
     }
     # mixed 入站开启嗅探，利于 HTTPS
     for ib in cfg["inbounds"]:
@@ -910,6 +965,30 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
             ib["sniff"] = True
             ib["sniff_override_destination"] = True
     return cfg
+
+
+def _singbox_route(mode: str) -> dict:
+    """sing-box 路由：绕过大陆 / 全局 / 全直连。"""
+    if mode == "direct":
+        return {"auto_detect_interface": True, "final": "direct"}
+    if mode == "global":
+        return {
+            "auto_detect_interface": True,
+            "final": "proxy",
+            "rules": [
+                {"ip_is_private": True, "outbound": "direct"},
+            ],
+        }
+    # bypass_cn：局域网与国内域名直连，其余走代理
+    return {
+        "auto_detect_interface": True,
+        "final": "proxy",
+        "rules": [
+            {"ip_is_private": True, "outbound": "direct"},
+            {"domain_suffix": CN_DOMAIN_SUFFIX, "outbound": "direct"},
+            {"domain_keyword": ["baidu", "alipay", "weixin", "qq.com"], "outbound": "direct"},
+        ],
+    }
 
 
 def _xray_stream(node: dict) -> dict:
@@ -1074,8 +1153,31 @@ def build_xray_config(node: dict, settings: dict) -> dict:
             {"tag": "direct", "protocol": "freedom"},
             {"tag": "block", "protocol": "blackhole"},
         ],
-        "routing": {"domainStrategy": "AsIs", "rules": []},
+        "routing": _xray_routing(_route_mode(settings)),
     }
+
+
+def _xray_routing(mode: str) -> dict:
+    if mode == "direct":
+        return {
+            "domainStrategy": "AsIs",
+            "rules": [{"type": "field", "network": "tcp,udp", "outboundTag": "direct"}],
+        }
+    rules = [
+        {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
+    ]
+    if mode == "bypass_cn":
+        # 有 geo 数据时用官方规则；无则用域名后缀回退
+        rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
+        rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
+        rules.append({
+            "type": "field",
+            "domain": [("domain:" + d) for d in CN_DOMAIN_SUFFIX if "." in d or d == "cn"],
+            "outboundTag": "direct",
+        })
+    if mode == "global":
+        pass
+    return {"domainStrategy": "IPIfNonMatch", "rules": rules}
 
 
 # ===================== system proxy =====================
@@ -1280,6 +1382,10 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
         if settings.get("tun") and log_cb:
             log_cb("TUN 目前仅 sing-box 支持，已忽略 TUN")
         binary = download_xray(log_cb)
+        try:
+            ensure_xray_geo(log_cb)
+        except Exception:
+            pass
         cfg = build_xray_config(node, settings)
     else:
         binary = download_singbox(log_cb)
@@ -1526,6 +1632,7 @@ class NetBridgeApp(tk.Tk):
         self.skin_var = tk.StringVar(value=self.settings.get("skin", "清新蓝"))
         self.font_size_var = tk.IntVar(value=int(self.settings.get("font_size") or 10))
         self.group_var = tk.StringVar(value=self.settings.get("group_filter", "全部"))
+        self.route_mode_var = tk.StringVar(value=self.settings.get("route_mode", "bypass_cn"))
         self.upload = "0 B/s"
         self.download = "0 B/s"
         self._anim_job = None
@@ -1568,6 +1675,7 @@ class NetBridgeApp(tk.Tk):
         self.settings["skin"] = self.skin_var.get()
         self.settings["font_size"] = int(self.font_size_var.get())
         self.settings["group_filter"] = self.group_var.get()
+        self.settings["route_mode"] = self.route_mode_var.get()
         save_settings(self.settings)
 
 
@@ -1796,6 +1904,16 @@ class NetBridgeApp(tk.Tk):
         )
         log_box.pack(side="left")
         log_box.bind("<<ComboboxSelected>>", lambda e: self._persist_settings())
+        tk.Label(opt2, text="路由", bg=BG, fg=SECONDARY).pack(side="left", padx=(10, 2))
+        route_box = ttk.Combobox(
+            opt2,
+            textvariable=self.route_mode_var,
+            values=["bypass_cn", "global", "direct"],
+            width=10,
+            state="readonly",
+        )
+        route_box.pack(side="left")
+        route_box.bind("<<ComboboxSelected>>", lambda e: self._persist_settings())
 
         opt3 = tk.Frame(self, bg=BG)
         opt3.pack(fill="x", padx=16, pady=(4, 0))
@@ -1899,6 +2017,9 @@ class NetBridgeApp(tk.Tk):
             mode.append("TUN")
         if self.lan_var.get():
             mode.append("局域网")
+        rm = {"bypass_cn": "绕过大陆", "global": "全局", "direct": "直连"}.get(self.route_mode_var.get(), "")
+        if rm:
+            mode.append(rm)
         mode_s = "+".join(mode) if mode else "仅本机"
         log_lv = self.log_level_var.get()
         self.lbl_proxy.config(text=f"{host}:{port} · {mode_s} · log={log_lv}")
