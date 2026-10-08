@@ -286,12 +286,12 @@ jobs:
           name: ios
           path: NetBridge-ios.zip
 
-  # 主发版：不等待 macOS（GitHub 托管 macOS runner 常排队）
-  # Windows/Linux/Android/iOS 一完成即可发 Release；macOS 由后面的 job 补传
+  # 五个平台并行构建完成后统一发版（任一非 Windows 失败不阻断，见 continue-on-error）
   release:
     needs:
       - windows-portable
       - linux-desktop
+      - macos-desktop
       - android-apk
       - ios-unsigned
     runs-on: ubuntu-latest
@@ -348,43 +348,3 @@ jobs:
           fail_on_unmatched_files: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-
-  # macOS 与上面 4 个 job 同时启动；跑完后把包补进同一 tag 的 Release
-  release-macos:
-    needs:
-      - macos-desktop
-      - release
-    runs-on: ubuntu-latest
-    if: ${{ always() && github.event.inputs.create_release == 'true' && needs.macos-desktop.result == 'success' }}
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: macos
-          path: macos_art
-        continue-on-error: true
-      - name: Upload macOS asset to existing release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.event.inputs.tag_name }}
-        run: |
-          set -e
-          f=$(find macos_art -name 'NetBridge-macos.zip' -type f | head -1)
-          if [ -z "$f" ]; then
-            echo "No macOS artifact"
-            exit 0
-          fi
-          # 删除同名旧附件再上传
-          RELEASE_ID=$(gh api "repos/${{ github.repository }}/releases/tags/${TAG}" --jq '.id' 2>/dev/null || true)
-          if [ -n "$RELEASE_ID" ] && [ "$RELEASE_ID" != "null" ]; then
-            OLD=$(gh api "repos/${{ github.repository }}/releases/${RELEASE_ID}/assets" --jq '.[] | select(.name=="NetBridge-macos.zip") | .id' 2>/dev/null || true)
-            for id in $OLD; do
-              gh api -X DELETE "repos/${{ github.repository }}/releases/assets/${id}" || true
-            done
-            gh release upload "$TAG" "$f" --clobber
-            echo "Uploaded NetBridge-macos.zip to $TAG"
-          else
-            echo "Release $TAG not found yet"
-            exit 1
-          fi
-
