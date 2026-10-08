@@ -51,7 +51,29 @@ CONFIG_FILE = RUNTIME / "config.json"
 
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
-MIXED_PORT = 1314
+MIXED_PORT = 7890
+APP_VERSION = "1.0.1"
+
+def app_version() -> str:
+    """与工程 VERSION 文件保持一致；找不到则用内置 APP_VERSION。"""
+    candidates = [
+        Path(__file__).resolve().parent.parent / "VERSION",
+        Path(__file__).resolve().parent / "VERSION",
+        Path.cwd() / "VERSION",
+    ]
+    # PyInstaller 解压目录旁
+    if getattr(sys, "frozen", False):
+        candidates.insert(0, Path(sys.executable).resolve().parent / "VERSION")
+    for c in candidates:
+        try:
+            if c.is_file():
+                v = c.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+                if v:
+                    return v.lstrip("vV")
+        except Exception:
+            pass
+    return APP_VERSION
+
 
 BLUE, GREEN, ORANGE, RED = "#007AFF", "#34C759", "#FF9500", "#FF3B30"
 BG, CARD, TEXT, SECONDARY = "#F2F2F7", "#FFFFFF", "#000000", "#8E8E93"
@@ -91,8 +113,8 @@ def load_settings() -> dict:
     s = load_json(SETTINGS_FILE, {})
     out = dict(DEFAULT_SETTINGS)
     out.update(s)
-    # 端口默认改为 1314；旧配置若仍是 7890 则迁移
-    if out.get("mixed_port") in (7890, "7890", None):
+    # 统一默认端口 7890（1314 在部分 Windows 环境无法监听）
+    if out.get("mixed_port") in (1314, "1314", None, 7890, "7890"):
         out["mixed_port"] = MIXED_PORT
     return out
 
@@ -447,7 +469,7 @@ def _parse_clash_proxies(text: str) -> list[dict]:
 
 
 def fetch_subscription(url: str, timeout: int = 20) -> list[dict]:
-    req = urllib.request.Request(url, headers={"User-Agent": "NetBridge/1.0.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": f"NetBridge/{APP_VERSION}"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
     try:
@@ -1143,7 +1165,7 @@ def sort_nodes_by_latency(nodes: list[dict]) -> list[dict]:
 class NetBridgeApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("NetBridge 1.0.0")
+        self.title(f"NetBridge {app_version()}")
         self.geometry("440x720")
         self.minsize(400, 640)
         self.configure(bg=BG)
