@@ -55,24 +55,9 @@ MIXED_PORT = 7890
 APP_VERSION = "1.0.1"
 
 def app_version() -> str:
-    """与工程 VERSION 文件保持一致；找不到则用内置 APP_VERSION。"""
-    candidates = [
-        Path(__file__).resolve().parent.parent / "VERSION",
-        Path(__file__).resolve().parent / "VERSION",
-        Path.cwd() / "VERSION",
-    ]
-    # PyInstaller 解压目录旁
-    if getattr(sys, "frozen", False):
-        candidates.insert(0, Path(sys.executable).resolve().parent / "VERSION")
-    for c in candidates:
-        try:
-            if c.is_file():
-                v = c.read_text(encoding="utf-8").strip().splitlines()[0].strip()
-                if v:
-                    return v.lstrip("vV")
-        except Exception:
-            pass
+    """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
     return APP_VERSION
+
 
 
 BLUE, GREEN, ORANGE, RED = "#007AFF", "#34C759", "#FF9500", "#FF3B30"
@@ -863,18 +848,23 @@ class SystemProxy:
             internet_set_option(0, 37, 0, 0)  # REFRESH
         except Exception:
             pass
-        # WinHTTP（部分系统服务/程序走这条）
+        # WinHTTP 较慢，放到后台，避免拖慢「连接」
+        def _wh():
+            try:
+                if enable:
+                    subprocess.run(
+                        ["netsh", "winhttp", "set", "proxy", f"{host}:{port}"],
+                        capture_output=True, timeout=3, **no_window_kwargs(),
+                    )
+                else:
+                    subprocess.run(
+                        ["netsh", "winhttp", "reset", "proxy"],
+                        capture_output=True, timeout=3, **no_window_kwargs(),
+                    )
+            except Exception:
+                pass
         try:
-            if enable:
-                subprocess.run(
-                    ["netsh", "winhttp", "set", "proxy", f"{host}:{port}"],
-                    capture_output=True, **no_window_kwargs(),
-                )
-            else:
-                subprocess.run(
-                    ["netsh", "winhttp", "reset", "proxy"],
-                    capture_output=True, **no_window_kwargs(),
-                )
+            threading.Thread(target=_wh, daemon=True).start()
         except Exception:
             pass
 
@@ -1009,7 +999,7 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
     kwargs = {"stdout": log_f, "stderr": subprocess.STDOUT, "env": env, **no_window_kwargs()}
     proc = subprocess.Popen(cmd, **kwargs)
     PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-    time.sleep(0.8)
+    time.sleep(0.25)
     if proc.poll() is not None:
         log_f.close()
         err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-2500:]
@@ -1019,7 +1009,7 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
     port = int(settings.get("mixed_port") or MIXED_PORT)
 
     # 等待端口就绪（最多约 6 秒）
-    ok = wait_port_open("127.0.0.1", port, tries=24, delay=0.25)
+    ok = wait_port_open("127.0.0.1", port, tries=6, delay=0.15)
     if not ok:
         # 进程还在但端口未开 → 仍报错
         if proc.poll() is not None:
@@ -1043,7 +1033,19 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
 
 
 
-def wait_port_open(host: str, port: int, tries: int = 20, delay: float = 0.25) -> bool:
+
+def log_says_core_started() -> bool:
+    """core.log 是否已出现 started（比 TCP 探测更可靠）。"""
+    try:
+        if not LOG_FILE.exists():
+            return False
+        tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
+        return ("started" in tail) or ("tcp server started" in tail)
+    except Exception:
+        return False
+
+
+def wait_port_open(host: str, port: int, tries: int = 8, delay: float = 0.12) -> bool:
     """等待本地端口开始监听。"""
     import socket
     for _ in range(tries):
@@ -1055,16 +1057,15 @@ def wait_port_open(host: str, port: int, tries: int = 20, delay: float = 0.25) -
     return False
 
 
-def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 5.0) -> tuple[bool, str]:
+def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 3.0) -> tuple[bool, str]:
     """先检测本地端口，再经代理访问外网。"""
     import socket
     import urllib.request
 
-    # 1) 端口是否在听（多等一会，避免刚启动误判）
-    if not wait_port_open("127.0.0.1", port, tries=24, delay=0.25):
-        # 再试 0.0.0.0 映射到本机的情况
-        if not wait_port_open("127.0.0.1", port, tries=8, delay=0.3):
-            return False, f"本地端口 127.0.0.1:{port} 未在监听（核心可能已退出，请看日志）"
+    # 1) 端口探测；失败时若日志已 started 则继续（避免 Windows 误报）
+    port_ok = wait_port_open("127.0.0.1", port, tries=6, delay=0.15)
+    if not port_ok and not log_says_core_started():
+        return False, f"本地端口 127.0.0.1:{port} 未在监听（核心可能已退出，请看日志）"
 
     # 2) 经 HTTP 代理访问（不走环境变量代理，避免套娃）
     url = "http://www.gstatic.com/generate_204"
@@ -1365,10 +1366,10 @@ class NetBridgeApp(tk.Tk):
                 start_core(self.core_var.get(), node, self.settings, log)
 
                 # 端口就绪即显示已连接，外网探测放到后台，避免一直「连接中」
-                if wait_port_open("127.0.0.1", port, tries=20, delay=0.25):
+                if wait_port_open("127.0.0.1", port, tries=5, delay=0.1) or log_says_core_started():
                     self.status = "connected"
                     self.after(0, lambda: self.lbl_status.config(
-                        text=f"已连接 · 127.0.0.1:{port}"
+                        text=f"已连接 · 请设系统代理 127.0.0.1:{port}"
                     ))
                     self.after(0, self._refresh)
 
@@ -1389,12 +1390,20 @@ class NetBridgeApp(tk.Tk):
 
                     threading.Thread(target=probe, daemon=True).start()
                 else:
-                    self.status = "error"
-                    self.after(0, lambda: messagebox.showwarning(
-                        "无法上网",
-                        f"本地端口 127.0.0.1:{port} 未在监听，请查看日志。",
-                    ))
-                    self.after(0, self._refresh)
+                    # 二次确认：日志里已 started 则仍算连接成功
+                    if log_says_core_started():
+                        self.status = "connected"
+                        self.after(0, lambda: self.lbl_status.config(
+                            text=f"已连接 · 系统代理请设 127.0.0.1:{port}"
+                        ))
+                        self.after(0, self._refresh)
+                    else:
+                        self.status = "error"
+                        self.after(0, lambda: messagebox.showwarning(
+                            "无法上网",
+                            f"未能确认核心在监听 {port}。\n请打开「日志」查看是否有 error。",
+                        ))
+                        self.after(0, self._refresh)
             except Exception as e:
                 self.status = "error"
                 err = str(e)
