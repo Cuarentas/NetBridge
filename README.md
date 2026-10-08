@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://img.shields.io/badge/NetBridge-1.1.0-007AFF?style=for-the-badge" alt="NetBridge" />
+  <img src="https://img.shields.io/github/v/release/Cuarentas/NetBridge?style=for-the-badge&label=NetBridge&color=007AFF" alt="NetBridge" />
 </p>
 
 <h1 align="center">NetBridge</h1>
@@ -84,7 +84,20 @@ Copyright (c) 2026 NetBridge Authors. All Rights Reserved.
 
 ---
 
+## 📌 版本号如何自动一致
+
+| 位置 | 如何保持一致 |
+|------|----------------|
+| **README 徽章** | 使用 shields.io 读取 **GitHub Latest Release**，发版后自动变 |
+| **Release 标题/tag** | 你在 Actions 里填的 `tag_name`（如 `v1.1.2`） |
+| **软件窗口标题** | 构建时把 `tag_name` 写入 `APP_VERSION`，与本次 Release 一致 |
+
+维护者只需：**Run workflow 时填写 tag**，不必再手改 README 徽章。
+
+---
+
 ## 🛠 构建说明（维护者）
+
 
 维护者可在 GitHub **Actions → Build Portable → Run workflow** 生成各平台安装包并自动创建 Release。  
 发版前会清理同一 tag 下的旧附件。
@@ -101,5 +114,5 @@ Copyright (c) 2026 NetBridge Authors. All Rights Reserved.
 ---
 
 <p align="center">
-  <sub>NetBridge 1.1.0 · All Rights Reserved</sub>
+  <sub>NetBridge · All Rights Reserved</sub>
 </p>
