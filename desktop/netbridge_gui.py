@@ -65,7 +65,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.1.7"
+APP_VERSION = "1.1.8"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -700,13 +700,28 @@ CN_DOMAIN_SUFFIX = [
     "microsoft.com", "windows.net", "live.com", "office.com", "msftconnecttest.com",
     "apple.com", "icloud.com", "cdn-apple.com", "mzstatic.com",
     "huawei.com", "honor.com", "mi.com", "xiaomi.com", "miui.com",
-    "360.cn", "qy.net", "csdn.net", "oschina.net", "gitee.com",
+    "360.cn", "360.com", "qy.net", "hao123.com", "so.com", "csdn.net", "oschina.net", "gitee.com",
     "douban.com", "acfun.cn", "iqiyi.com", "pptv.com", "mgtv.com",
     "cctv.com", "gov.cn", "edu.cn", "org.cn", "com.cn", "net.cn",
 ]
 
 
+def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
+    """系统代理绕过列表：绕过大陆时国内域名不进本地代理。"""
+    base = ["localhost", "127.*", "10.*", "192.168.*", "172.16.*", "172.17.*", "172.18.*", "172.19.*", "172.2*", "172.3*", "<local>"]
+    if route_mode == "bypass_cn":
+        # 浏览器侧直连国内，不经过 7890
+        extra = ["*.cn", "*.baidu.com", "*.qq.com", "*.tencent.com", "*.aliyun.com", "*.taobao.com",
+                 "*.aliyuncs.com", "*.163.com", "*.126.com", "*.bilibili.com", "*.hdslb.com",
+                 "*.zhihu.com", "*.jd.com", "*.360.com", "*.360.cn", "*.mi.com", "*.xiaomi.com",
+                 "*.msftconnecttest.com", "*.microsoft.com", "*.windowsupdate.com",
+                 "*.apple.com", "*.icloud.com", "*.gov.cn", "*.edu.cn"]
+        base.extend(extra)
+    return ";".join(base)
+
+
 def _route_mode(settings: dict) -> str:
+
     m = (settings.get("route_mode") or "bypass_cn").lower()
     if m in ("bypass_cn", "global", "direct"):
         return m
@@ -1150,12 +1165,13 @@ class SystemProxy:
         self._enabled = False
         self._port = MIXED_PORT
 
-    def enable(self, port: int = MIXED_PORT):
+    def enable(self, port: int = MIXED_PORT, route_mode: str = "bypass_cn"):
         self._port = port
+        self._route_mode = route_mode or "bypass_cn"
         host = "127.0.0.1"
         try:
             if is_windows():
-                self._win_set(host, port, True)
+                self._win_set(host, port, True, getattr(self, "_route_mode", "bypass_cn"))
             elif is_mac():
                 self._mac_set(host, port, True)
             else:
@@ -1170,7 +1186,7 @@ class SystemProxy:
             pass
         try:
             if is_windows():
-                self._win_set("127.0.0.1", self._port, False)
+                self._win_set("127.0.0.1", self._port, False, "global")
             elif is_mac():
                 self._mac_set("127.0.0.1", self._port, False)
             else:
@@ -1179,7 +1195,7 @@ class SystemProxy:
             pass
         self._enabled = False
 
-    def _win_set(self, host: str, port: int, enable: bool):
+    def _win_set(self, host: str, port: int, enable: bool, route_mode: str = "bypass_cn"):
         import winreg  # type: ignore
         key = winreg.OpenKey(
             winreg.HKEY_CURRENT_USER,
@@ -1192,7 +1208,7 @@ class SystemProxy:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
                 # Windows 设置界面需要「地址 + 端口」分离；注册表用 host:port 最兼容
                 winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
-                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, "localhost;127.*;<local>")
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
             else:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
         finally:
@@ -1484,7 +1500,7 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
     want_proxy = settings.get("system_proxy") or not settings.get("tun")
     if want_proxy:
         try:
-            SYS_PROXY.enable(port)
+            SYS_PROXY.enable(port, route_mode=str(settings.get("route_mode") or "bypass_cn"))
             if log_cb:
                 log_cb(f"系统代理已设为 127.0.0.1:{port}")
         except Exception as e:
@@ -1779,48 +1795,73 @@ class NetBridgeApp(tk.Tk):
         self._resize_job = self.after(200, self._apply_gradient_bg)
 
     def _apply_gradient_bg(self):
-
-        """粉紫蓝渐变底色（对齐羽毛图）。"""
+        """粉紫蓝渐变：窗口底图 + 同步控件底色（Tk 控件不透明，必须一起改色）。"""
         sk = self._skin()
         if not sk.get("gradient"):
             try:
-                if hasattr(self, "_bg_label"):
+                if getattr(self, "_bg_label", None):
                     self._bg_label.place_forget()
             except Exception:
                 pass
-            self.configure(bg=sk["bg"])
+            try:
+                self.configure(bg=sk["bg"])
+            except Exception:
+                pass
             return
+        # 渐变主色（与羽毛图一致的浅粉紫蓝）
+        base_bg = "#E8D5F5"
+        card_bg = "#F5EEFF"
         try:
-            from PIL import ImageTk as _ImageTk
-        except Exception:
-            self.configure(bg=sk["bg"])
-            return
-        try:
+            from PIL import Image as _Image, ImageTk as _ImageTk
             self.update_idletasks()
-            w = max(self.winfo_width(), 460)
-            h = max(self.winfo_height(), 760)
-            # prefer asset
+            w = max(int(self.winfo_width() or 460), 400)
+            h = max(int(self.winfo_height() or 760), 600)
             path = asset_path("bg_gradient.png")
             if path and path.is_file():
-                from PIL import Image as _Image
                 img = _Image.open(path).convert("RGB").resize((w, h))
             else:
                 img = self._make_gradient_image(w, h)
-            if img is None:
-                self.configure(bg=sk["bg"])
-                return
-            self._bg_photo = _ImageTk.PhotoImage(img)
-            if not hasattr(self, "_bg_label") or self._bg_label is None:
-                self._bg_label = tk.Label(self, image=self._bg_photo, borderwidth=0)
+            if img is not None:
+                self._bg_photo = _ImageTk.PhotoImage(img)
+                if not getattr(self, "_bg_label", None):
+                    self._bg_label = tk.Label(self, image=self._bg_photo, borderwidth=0)
+                else:
+                    self._bg_label.configure(image=self._bg_photo)
                 self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
                 self._bg_label.lower()
-            else:
-                self._bg_label.configure(image=self._bg_photo)
-                self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
-                self._bg_label.lower()
-            self.configure(bg=sk["bg"])
         except Exception:
-            self.configure(bg=sk["bg"])
+            pass
+        try:
+            self.configure(bg=base_bg)
+        except Exception:
+            pass
+        # 递归把仍用旧 BG 的 Frame/Label 刷成渐变底色
+        def walk(w):
+            try:
+                cls = w.winfo_class()
+                if cls in ("Frame", "Label", "Toplevel"):
+                    cur = str(w.cget("bg") or "").lower()
+                    if cur in (str(BG).lower(), "#e8f1ff", "#f2f2f7", base_bg.lower(), "#c9b8f0"):
+                        w.configure(bg=base_bg)
+                if cls == "Frame":
+                    # 卡片略浅
+                    pass
+            except Exception:
+                pass
+            try:
+                for c in w.winfo_children():
+                    walk(c)
+            except Exception:
+                pass
+        try:
+            walk(self)
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "canvas"):
+                self.canvas.configure(bg=card_bg)
+        except Exception:
+            pass
 
     def _rebuild_colors(self):
         sk = self._skin()
