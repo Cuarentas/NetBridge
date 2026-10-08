@@ -74,6 +74,11 @@ jobs:
           foreach ($f in @("netbridge.ico","netbridge.png","netbridge_tray.png","bg_gradient.png")) {
             if (Test-Path $f) { Copy-Item $f "dist/NetBridge/assets/$f" -Force }
           }
+          if (Test-Path "assets") {
+            Copy-Item "assets\*" "dist/NetBridge/assets\" -Force -ErrorAction SilentlyContinue
+          }
+          Get-ChildItem -Filter "icon_*.png" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "dist/NetBridge/assets/" -Force }
+          Get-ChildItem -Filter "icon_*.ico" -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item $_.FullName "dist/NetBridge/assets/" -Force }
           # 根目录说明：双击 NetBridge.exe
           $readme = @(
             "NetBridge Windows Portable"
