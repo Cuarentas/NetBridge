@@ -53,6 +53,7 @@ jobs:
           if (-not (Test-Path dist/NetBridge/NetBridge.exe)) { throw "PyInstaller output missing" }
           New-Item -ItemType Directory -Force -Path dist/NetBridge/core/bin | Out-Null
           Copy-Item core/bin/* dist/NetBridge/core/bin/ -Force
+          if (Test-Path ../VERSION) { Copy-Item ../VERSION dist/NetBridge/VERSION -Force }
           Compress-Archive -Path dist/NetBridge/* -DestinationPath ../NetBridge-windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
         with:
