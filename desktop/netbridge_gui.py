@@ -1337,18 +1337,45 @@ def is_running() -> bool:
         return False
 
 
-def stop_core():
+def _pids_on_port(port: int) -> list[int]:
+    """查找占用指定本地端口的 PID（Windows netstat）。"""
+    pids = []
     try:
-        SYS_PROXY.disable()
+        if is_windows():
+            r = subprocess.run(
+                ["netstat", "-ano", "-p", "tcp"],
+                capture_output=True, text=True, **no_window_kwargs(),
+            )
+            for line in (r.stdout or "").splitlines():
+                line = line.strip()
+                if f":{port}" not in line:
+                    continue
+                if "LISTENING" not in line.upper() and "监听" not in line:
+                    # 仍匹配 LISTENING
+                    if "LISTEN" not in line.upper():
+                        continue
+                parts = line.split()
+                if not parts:
+                    continue
+                try:
+                    pid = int(parts[-1])
+                    if pid > 0 and pid not in pids:
+                        pids.append(pid)
+                except ValueError:
+                    pass
+        else:
+            r = subprocess.run(
+                ["ss", "-lptn", f"sport = :{port}"],
+                capture_output=True, text=True,
+            )
+            for m in re.finditer(r"pid=(\d+)", r.stdout or ""):
+                pids.append(int(m.group(1)))
     except Exception:
         pass
-    if not PID_FILE.exists():
-        return
-    try:
-        pid = int(PID_FILE.read_text().strip())
-    except Exception:
-        PID_FILE.unlink(missing_ok=True)
-        return
+    return pids
+
+
+def _kill_pid(pid: int):
     try:
         if is_windows():
             subprocess.run(
@@ -1356,21 +1383,62 @@ def stop_core():
                 capture_output=True, **no_window_kwargs(),
             )
         else:
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.3)
-            try:
-                os.kill(pid, 0)
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
+            os.kill(pid, signal.SIGKILL)
     except Exception:
         pass
+
+
+def free_listen_port(port: int, log_cb=None):
+    """释放端口占用（旧核心残留是 7890 bind 失败的主因）。"""
+    for pid in _pids_on_port(port):
+        if log_cb:
+            log_cb(f"释放端口 {port}，结束 PID={pid}")
+        _kill_pid(pid)
+    # 再清一次常见核心进程名（防止 PID 文件丢失）
+    if is_windows():
+        for name in ("xray.exe", "sing-box.exe", "singbox.exe"):
+            try:
+                subprocess.run(
+                    ["taskkill", "/IM", name, "/F", "/T"],
+                    capture_output=True, **no_window_kwargs(),
+                )
+            except Exception:
+                pass
+    time.sleep(0.35)
+
+
+def stop_core():
+    try:
+        SYS_PROXY.disable()
+    except Exception:
+        pass
+    pid = None
+    if PID_FILE.exists():
+        try:
+            pid = int(PID_FILE.read_text().strip())
+        except Exception:
+            pass
+    if pid:
+        _kill_pid(pid)
+    # 默认混合口 + socks 口
+    try:
+        port = MIXED_PORT
+        if SETTINGS_FILE.exists():
+            port = int(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")).get("mixed_port") or MIXED_PORT)
+    except Exception:
+        port = MIXED_PORT
+    free_listen_port(port)
+    free_listen_port(port + 1)
     PID_FILE.unlink(missing_ok=True)
 
 
 def start_core(core: str, node: dict, settings: dict, log_cb=None):
     ensure_dirs()
     stop_core()
+    port = int(settings.get("mixed_port") or MIXED_PORT)
+    # 启动前再确保端口空闲
+    free_listen_port(port, log_cb)
+    free_listen_port(port + 1, log_cb)
 
     # 核心日志至少 info，否则界面选 error 时看不到 started，会误判失败
     settings = dict(settings)
@@ -1441,7 +1509,10 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
             pass
         err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
         PID_FILE.unlink(missing_ok=True)
-        raise RuntimeError(f"核心启动失败（进程已退出）:\n{err}")
+        hint = ""
+        if "Only one usage" in err or "address already in use" in err.lower():
+            hint = "\n\n【原因】端口被占用。请关闭其它代理软件，或在任务管理器结束 xray.exe / sing-box.exe 后重试。"
+        raise RuntimeError(f"核心启动失败（进程已退出）:\n{err}{hint}")
 
     # 进程仍在 → 视为启动成功（不依赖日志里的 started 字样）
     if log_cb:
