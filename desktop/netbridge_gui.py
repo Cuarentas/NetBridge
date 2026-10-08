@@ -475,19 +475,31 @@ def parse_trojan(url: str) -> dict | None:
         p = urllib.parse.urlparse(url)
         q = urllib.parse.parse_qs(p.query)
         name = urllib.parse.unquote(p.fragment) if p.fragment else f"Trojan-{p.hostname}"
+        net = (q.get("type") or q.get("network") or ["tcp"])[0].lower()
+        path = urllib.parse.unquote((q.get("path") or ["/"])[0] or "/")
+        host = (q.get("host") or [""])[0]
+        sni = (q.get("sni") or q.get("peer") or [""])[0]
+        # 与 v2rayN 一致：ws 时 host 缺省用 sni
+        if net in ("ws", "websocket") and not host and sni:
+            host = sni
+        if not sni:
+            sni = host or (p.hostname or "")
+        allow = (q.get("allowInsecure") or q.get("allow_insecure") or q.get("insecure") or ["1"])[0]
         node = {
             "name": name,
             "protocol": "trojan",
             "server": p.hostname or "",
             "port": p.port or 443,
             "password": urllib.parse.unquote(p.username or ""),
-            "network": (q.get("type") or ["tcp"])[0],
+            "network": net,
             "tls": True,
-            "sni": (q.get("sni") or q.get("peer") or [p.hostname or ""])[0],
-            "path": (q.get("path") or [""])[0],
-            "host": (q.get("host") or [""])[0],
+            "sni": sni,
+            "path": path if path.startswith("/") else ("/" + path),
+            "host": host,
             "service_name": (q.get("serviceName") or q.get("service_name") or [""])[0],
-            "fp": (q.get("fp") or [""])[0],
+            "fp": (q.get("fp") or ["chrome"])[0],
+            "alpn": (q.get("alpn") or [""])[0],
+            "allow_insecure": str(allow).lower() in ("1", "true", "yes"),
         }
         return node
     except Exception:
@@ -636,8 +648,29 @@ def _parse_clash_proxies(text: str) -> list[dict]:
         }
         # opts
         # path/host often nested; try flat keys
-        if d.get("ws-opts") or "path" in d:
+        # Clash Meta 扁平字段 / ws-opts
+        if (d.get("network") or "").lower() in ("ws", "websocket"):
+            node["network"] = "ws"
+        if d.get("path"):
             node["path"] = d.get("path") or ""
+        if d.get("host") or d.get("ws-host"):
+            node["host"] = d.get("host") or d.get("ws-host") or ""
+        # 简单解析 ws-opts: { path: /xx, headers: { Host: yy } }
+        wo = d.get("ws-opts") or ""
+        if "path" in d and not node.get("path"):
+            node["path"] = d.get("path") or ""
+        if isinstance(wo, str) and wo:
+            pm = re.search(r"path:\s*['\"]?([^'\"\s}]+)", wo)
+            if pm:
+                node["path"] = pm.group(1)
+            hm = re.search(r"Host:\s*['\"]?([^'\"\s}]+)", wo)
+            if hm:
+                node["host"] = hm.group(1)
+        if (d.get("type") or "").lower() == "trojan":
+            node["tls"] = True
+            node["allow_insecure"] = True
+            if not node.get("sni"):
+                node["sni"] = d.get("sni") or d.get("servername") or node.get("host") or ""
         if d.get("grpc-opts"):
             node["network"] = "grpc"
         if str(d.get("reality-opts", "")) or d.get("public-key"):
@@ -661,24 +694,56 @@ def fetch_subscription(url: str, timeout: int = 20) -> list[dict]:
 
 
 # ===================== config builders (WS/gRPC/Reality) =====================
+
+def normalize_node(node: dict) -> dict:
+    """补齐与 v2rayN 一致的默认字段，修复订阅导入缺项。"""
+    n = dict(node)
+    proto = (n.get("protocol") or "").lower()
+    net = (n.get("network") or "tcp").lower()
+    if net in ("websocket",):
+        net = "ws"
+        n["network"] = "ws"
+    if proto == "trojan":
+        n["tls"] = True
+        if n.get("allow_insecure") is None:
+            n["allow_insecure"] = True
+    if net == "ws":
+        if not n.get("path"):
+            n["path"] = "/"
+        if not n.get("host") and n.get("sni"):
+            n["host"] = n["sni"]
+        if not n.get("sni") and n.get("host"):
+            n["sni"] = n["host"]
+    if not n.get("sni") and n.get("tls"):
+        n["sni"] = n.get("host") or n.get("server") or ""
+    if not n.get("fp") and (n.get("tls") or proto == "trojan"):
+        n["fp"] = "chrome"
+    return n
+
+
 def _sb_tls(node: dict) -> dict | None:
-    if not (node.get("tls") or node.get("reality")):
+    proto = (node.get("protocol") or "").lower()
+    # trojan 本身就是 TLS；ws/grpc 的 vless/vmess 常开 TLS
+    if not (node.get("tls") or node.get("reality") or proto == "trojan"):
         return None
     tls: dict = {
         "enabled": True,
         "server_name": node.get("sni") or node.get("host") or node.get("server") or "",
+        # 多数机场节点证书与 IP 不一致，默认允许不安全（与 v2rayN 常见设置一致）
+        "insecure": True if node.get("allow_insecure", True) else False,
     }
     if node.get("fp"):
         tls["utls"] = {"enabled": True, "fingerprint": node["fp"]}
     if node.get("alpn"):
         alpn = node["alpn"]
-        tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
+        tls["alpn"] = [a.strip() for a in str(alpn).split(",") if a.strip()]
     if node.get("reality"):
         tls["reality"] = {
             "enabled": True,
             "public_key": node.get("pbk") or "",
             "short_id": node.get("sid") or "",
         }
+        tls["insecure"] = False
     return tls
 
 
@@ -686,8 +751,9 @@ def _sb_transport(node: dict) -> dict | None:
     net = (node.get("network") or "tcp").lower()
     if net in ("ws", "websocket"):
         t = {"type": "ws", "path": node.get("path") or "/"}
-        if node.get("host"):
-            t["headers"] = {"Host": node["host"]}
+        host = node.get("host") or node.get("sni") or ""
+        if host:
+            t["headers"] = {"Host": host}
         return t
     if net == "grpc":
         return {
@@ -708,6 +774,7 @@ def _sb_transport(node: dict) -> dict | None:
 
 
 def build_singbox_config(node: dict, settings: dict) -> dict:
+    node = normalize_node(node)
     proto = (node.get("protocol") or "ss").lower()
     outbound: dict = {"tag": "proxy"}
 
@@ -885,9 +952,13 @@ def _xray_stream(node: dict) -> dict:
         }
     elif need_tls:
         stream["security"] = "tls"
+        # 默认 allowInsecure=True，对齐 v2rayN 常见可用配置
+        allow = node.get("allow_insecure")
+        if allow is None:
+            allow = True
         tls: dict = {
             "serverName": node.get("sni") or node.get("host") or node.get("server") or "",
-            "allowInsecure": bool(node.get("allow_insecure")),
+            "allowInsecure": bool(allow),
         }
         if node.get("fp"):
             tls["fingerprint"] = node["fp"]
@@ -900,6 +971,7 @@ def _xray_stream(node: dict) -> dict:
 
 
 def build_xray_config(node: dict, settings: dict) -> dict:
+    node = normalize_node(node)
     proto = (node.get("protocol") or "ss").lower()
     stream = _xray_stream(node)
 
