@@ -673,16 +673,22 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
             "sniff": True,
         })
 
-    # 不再使用 dns/block 等 legacy special outbounds（sing-box 1.11+ 会告警）
+    # HTTPS CONNECT 依赖 DNS；避免 DNS 全走代理导致解析卡死
+    outbound.setdefault("domain_strategy", "prefer_ipv4")
     cfg = {
         "log": {"level": log_level, "timestamp": True},
         "dns": {
             "servers": [
-                {"address": "8.8.8.8", "detour": "proxy"},
-                {"address": "1.1.1.1", "detour": "proxy"},
-                {"address": "local", "detour": "direct"},
+                {"tag": "local", "address": "local", "detour": "direct"},
+                {"tag": "google", "address": "8.8.8.8", "detour": "proxy"},
+                {"tag": "cf", "address": "1.1.1.1", "detour": "proxy"},
             ],
+            "rules": [
+                {"domain_suffix": ["google.com", "googleapis.com", "gstatic.com", "youtube.com", "googlevideo.com", "cloudflare.com", "ytimg.com"], "server": "google"},
+            ],
+            "final": "local",
             "strategy": "prefer_ipv4",
+            "independent_cache": True,
         },
         "inbounds": inbounds,
         "outbounds": [
@@ -694,6 +700,11 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
             "final": "proxy",
         },
     }
+    # mixed 入站开启嗅探，利于 HTTPS
+    for ib in cfg["inbounds"]:
+        if ib.get("type") in ("mixed", "socks", "http"):
+            ib["sniff"] = True
+            ib["sniff_override_destination"] = True
     return cfg
 
 
