@@ -710,13 +710,17 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
 
 def _xray_stream(node: dict) -> dict:
     net = (node.get("network") or "tcp").lower()
+    proto = (node.get("protocol") or "").lower()
     stream: dict = {"network": "tcp"}
 
     if net in ("ws", "websocket"):
         stream["network"] = "ws"
-        stream["wsSettings"] = {"path": node.get("path") or "/"}
-        if node.get("host"):
-            stream["wsSettings"]["headers"] = {"Host": node["host"]}
+        ws: dict = {"path": node.get("path") or "/"}
+        # Xray 25+：使用独立 host，避免 headers.Host 弃用警告
+        host = node.get("host") or node.get("sni") or ""
+        if host:
+            ws["host"] = host
+        stream["wsSettings"] = ws
     elif net == "grpc":
         stream["network"] = "grpc"
         stream["grpcSettings"] = {
@@ -728,22 +732,31 @@ def _xray_stream(node: dict) -> dict:
         if node.get("host"):
             stream["httpSettings"]["host"] = [node["host"]]
 
+    # trojan / vless + ws/grpc 默认开 TLS
+    need_tls = bool(node.get("tls") or node.get("reality"))
+    if not need_tls and net in ("ws", "websocket", "grpc") and proto in ("trojan", "vless", "vmess"):
+        need_tls = True
+
     if node.get("reality"):
         stream["security"] = "reality"
         stream["realitySettings"] = {
-            "serverName": node.get("sni") or node.get("server") or "",
+            "serverName": node.get("sni") or node.get("host") or node.get("server") or "",
             "fingerprint": node.get("fp") or "chrome",
             "publicKey": node.get("pbk") or "",
             "shortId": node.get("sid") or "",
             "spiderX": node.get("spx") or "",
         }
-    elif node.get("tls"):
+    elif need_tls:
         stream["security"] = "tls"
-        tls: dict = {"serverName": node.get("sni") or node.get("host") or node.get("server") or ""}
+        tls: dict = {
+            "serverName": node.get("sni") or node.get("host") or node.get("server") or "",
+            "allowInsecure": bool(node.get("allow_insecure")),
+        }
         if node.get("fp"):
             tls["fingerprint"] = node["fp"]
+        # 不强制 ALPN http/1.1，减少 Xray 25 弃用警告；由核心自行协商
         if node.get("alpn"):
-            tls["alpn"] = [a.strip() for a in node["alpn"].split(",") if a.strip()]
+            tls["alpn"] = [a.strip() for a in str(node["alpn"]).split(",") if a.strip()]
         stream["tlsSettings"] = tls
 
     return stream
