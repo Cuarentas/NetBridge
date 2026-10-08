@@ -64,7 +64,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.2"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
