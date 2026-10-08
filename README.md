@@ -20,99 +20,88 @@
 
 ---
 
-## ✨ 特性
+## ✨ 特性（1.2.0 整合版）
 
 | | |
 |:--|:--|
-| **精致界面** | 大圆形连接按钮、节点卡片，操作路径清晰 |
-| **双核心** | sing-box / Xray，正式包内置，无需再下核心 |
-| **协议丰富** | Shadowsocks · VMess · VLESS · Trojan |
-| **现代传输** | WebSocket · gRPC · Reality |
-| **一键订阅** | 支持订阅链接与分享链接导入 |
-| **系统集成** | 系统代理 / TUN（需管理员） |
-| **局域网** | 可选允许局域网设备共用本机代理 |
-| **测速优选** | 多线程延迟测试，自动标记可用节点 |
-| **可调日志** | trace / debug / info / warn / error |
+| **精致界面** | 大圆形连接按钮、羽毛渐变底色、多皮肤 |
+| **双核心** | sing-box / Xray（发布包内置） |
+| **协议** | Shadowsocks · VMess · VLESS · Trojan |
+| **传输** | TCP · WebSocket · gRPC · Reality |
+| **订阅** | 一键导入，支持分组 |
+| **分流** | 绕过大陆 / 全局 / 直连（国内直连、国外代理） |
+| **系统集成** | 系统代理 · TUN（需管理员） |
+| **局域网** | 可选允许局域网共用代理 |
+| **测速** | 多线程延迟测试，按延迟排序 |
+| **托盘** | 最小化到托盘、断开连接 |
+| **更新** | 检查更新（镜像 + 本地代理回退） |
+| **字号/日志** | 用户可调 |
 
 ---
 
-## 📥 下载安装
+## 📥 下载
 
-请仅从本仓库 **[Releases](../../releases)** 获取官方构建包：
+请从 **[Releases](../../releases)** 获取：
 
-| 平台 | 安装包 | 说明 |
-|:-----|:-------|:-----|
-| Windows | `NetBridge-windows-x64.zip` | 解压后运行 `NetBridge.exe` |
-| Linux | `NetBridge-linux-x64.tar.gz` | 解压后运行 |
-| macOS | `NetBridge-macos.zip` | 打开 `.app`（若拦截请右键打开） |
-| Android | `NetBridge-android.apk` | 允许未知来源后安装 |
-| iOS | `NetBridge-ios.zip` | 未签名，需自行用开发者证书签名 |
+| 平台 | 文件 |
+|:-----|:-----|
+| Windows | `NetBridge-windows-x64.zip` → 运行 `NetBridge.exe` |
+| Linux | `NetBridge-linux-x64.tar.gz` |
+| macOS | `NetBridge-macos.zip` |
+| Android | `NetBridge-android.apk` |
+| iOS | `NetBridge-ios.zip`（需自行签名） |
 
-> 默认本地混合代理端口：**7890**
-
----
-
-## 🚀 快速开始（Windows）
-
-1. 下载并解压 `NetBridge-windows-x64.zip`
-2. 双击运行 **NetBridge.exe**
-3. 导入订阅或手动添加节点
-4. 勾选 **系统代理**（推荐）
-5. 点击中央按钮连接
-
-可选：
-
-- **允许局域网连接** → 其它设备可使用 `本机IP:7890`
-- **测试** → 多线程测延迟并优选节点
-- **日志** → 调整等级并查看 `core.log`
+默认本地端口：**7890**
 
 ---
 
-## 🔒 授权与源码政策
+## 🚀 Windows 快速开始
 
-本软件为 **专有软件（Proprietary）**，**并非开源项目**。
+1. 解压并运行 **NetBridge.exe**
+2. 导入订阅（可填分组名）
+3. 路由选择 **bypass_cn**（绕过大陆）
+4. 勾选 **系统代理** → 连接
+5. 系统代理地址：`127.0.0.1` / `7890`
 
-- 源码与工程文件保留所有权利，未经授权不得公开再分发或二次开发  
-- 正式用户请通过官方 Release 获取二进制安装包  
-- 详细条款见仓库根目录 [`LICENSE`](LICENSE)  
+**勿与 v2rayN 等同时占用 7890。** 连接前会自动尝试释放端口。
+
+---
+
+## 📌 版本号自动一致
+
+| 位置 | 规则 |
+|------|------|
+| README 徽章 | shields 读取 GitHub Latest Release |
+| Release / tag | Actions 填写的 `tag_name` |
+| 软件标题 | 构建时写入 `APP_VERSION` |
+
+发版只需在 Actions 填 tag（如 `v1.2.0`）。
+
+---
+
+## 🔒 授权
+
+本软件为 **专有软件（Proprietary）**，详见 [`LICENSE`](LICENSE)。
 
 ```
 Copyright (c) 2026 NetBridge Authors. All Rights Reserved.
 ```
 
-若 GitHub 仓库需对外隐藏源码，请在仓库 **Settings → General → Danger Zone** 中将可见性设为 **Private**，或仅发布 Release 附件、不公开完整源码树。
-
 ---
 
-## 📌 版本号如何自动一致
+## 🛠 维护者构建
 
-| 位置 | 如何保持一致 |
-|------|----------------|
-| **README 徽章** | 使用 shields.io 读取 **GitHub Latest Release**，发版后自动变 |
-| **Release 标题/tag** | 你在 Actions 里填的 `tag_name`（如 `v1.1.2`） |
-| **软件窗口标题** | 构建时把 `tag_name` 写入 `APP_VERSION`，与本次 Release 一致 |
+**Actions → Build Portable → Run workflow**  
+`tag_name` = `v1.2.0`，`create_release` = true
 
-维护者只需：**Run workflow 时填写 tag**，不必再手改 README 徽章。
-
----
-
-## 🛠 构建说明（维护者）
-
-
-维护者可在 GitHub **Actions → Build Portable → Run workflow** 生成各平台安装包并自动创建 Release。  
-发版前会清理同一 tag 下的旧附件。
-
-详见 [`docs/GITHUB_WEB_PUBLISH.md`](docs/GITHUB_WEB_PUBLISH.md)。
+详见 [`docs/GITHUB_WEB_PUBLISH.md`](docs/GITHUB_WEB_PUBLISH.md)
 
 ---
 
 ## ⚠️ 免责声明
 
-本软件仅供学习、研究与合法网络调试。  
-请遵守所在地法律法规。开发者不对任何滥用行为承担责任。
+仅供学习、研究与合法网络调试。请遵守当地法律法规。
 
 ---
 
-<p align="center">
-  <sub>NetBridge · All Rights Reserved</sub>
-</p>
+<p align="center"><sub>NetBridge · All Rights Reserved</sub></p>

@@ -38,8 +38,9 @@ from tkinter import ttk, messagebox, scrolledtext
 
 try:
     import pystray
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageTk
     HAS_TRAY = True
+    HAS_PIL = True
 except Exception:
     pystray = None
     HAS_TRAY = False
@@ -64,7 +65,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.2.0"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -97,6 +98,7 @@ def save_json(path: Path, data):
 
 # ===================== settings =====================
 SKINS = {
+    "羽毛渐变": {"bg": "#C9B8F0", "card": "#FFFFFF", "accent": "#7C3AED", "text": "#1E1B4B", "secondary": "#5B5675", "btn": "#7C3AED", "btn_fg": "#FFFFFF", "gradient": True},
     "清新蓝": {"bg": "#E8F1FF", "card": "#FFFFFF", "accent": "#007AFF", "text": "#0A1628", "secondary": "#5B6B7C", "btn": "#007AFF", "btn_fg": "#FFFFFF"},
     "暗夜灰": {"bg": "#1C1C1E", "card": "#2C2C2E", "accent": "#0A84FF", "text": "#F5F5F7", "secondary": "#8E8E93", "btn": "#0A84FF", "btn_fg": "#FFFFFF"},
     "薄荷绿": {"bg": "#E8F8F0", "card": "#FFFFFF", "accent": "#34C759", "text": "#0A2818", "secondary": "#5A7A68", "btn": "#34C759", "btn_fg": "#FFFFFF"},
@@ -111,7 +113,7 @@ DEFAULT_SETTINGS = {
     "mixed_port": MIXED_PORT,
     "allow_lan": False,
     "log_level": "info",
-    "skin": "清新蓝",
+    "skin": "羽毛渐变",
     "font_size": 10,
     "auto_update_check": True,
     "group_filter": "全部",
@@ -142,69 +144,6 @@ def alert_error():
             print("\a", end="", flush=True)
     except Exception:
         pass
-
-
-RELEASES_PAGE = "https://github.com/Cuarentas/NetBridge/releases"
-RELEASES_API = "https://api.github.com/repos/Cuarentas/NetBridge/releases/latest"
-# 国内等网络环境下 api.github.com 常不可达，增加镜像回退
-RELEASES_API_MIRRORS = [
-    RELEASES_API,
-    "https://ghproxy.net/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
-    "https://mirror.ghproxy.com/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
-    "https://gh.ddlc.top/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
-]
-
-
-def _norm_ver(v: str) -> list:
-    parts = []
-    for x in re.split(r"[^0-9]+", (v or "").lstrip("vV")):
-        if x.isdigit():
-            parts.append(int(x))
-    return parts or [0]
-
-
-def _http_get_json(url: str, timeout: float = 12.0, use_proxy: bool | None = None) -> dict:
-    """GET JSON。use_proxy: None=先直连再试本地代理, True=仅代理, False=仅直连。"""
-    headers = {
-        "User-Agent": f"NetBridge/{APP_VERSION}",
-        "Accept": "application/vnd.github+json",
-    }
-    port = MIXED_PORT
-    try:
-        if SETTINGS_FILE.exists():
-            s = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            port = int(s.get("mixed_port") or MIXED_PORT)
-    except Exception:
-        pass
-    proxy_url = f"http://127.0.0.1:{port}"
-
-    def do(opener):
-        req = urllib.request.Request(url, headers=headers)
-        with opener.open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode("utf-8", errors="replace"))
-
-    errors = []
-    modes = []
-    if use_proxy is True:
-        modes = ["proxy"]
-    elif use_proxy is False:
-        modes = ["direct"]
-    else:
-        modes = ["direct", "proxy"]
-
-    for mode in modes:
-        try:
-            if mode == "direct":
-                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            else:
-                opener = urllib.request.build_opener(
-                    urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
-                )
-            return do(opener)
-        except Exception as e:
-            errors.append(f"{mode}:{e}")
-    raise RuntimeError("; ".join(errors[-4:]))
-
 
 
 RELEASES_PAGE = "https://github.com/Cuarentas/NetBridge/releases"
@@ -1661,9 +1600,11 @@ def sort_nodes_by_latency(nodes: list[dict]) -> list[dict]:
 
 
 def make_tray_image():
-    """托盘图标：优先使用羽毛图标文件。"""
+    """托盘图标：优先使用应用图标文件。"""
     for c in (
+        Path(__file__).resolve().parent / "netbridge_tray.png",
         Path(__file__).resolve().parent / "netbridge.png",
+        Path(sys.executable).resolve().parent / "netbridge_tray.png" if getattr(sys, "frozen", False) else None,
         Path(sys.executable).resolve().parent / "netbridge.png" if getattr(sys, "frozen", False) else None,
         ROOT / "netbridge.png",
     ):
@@ -1700,7 +1641,7 @@ class NetBridgeApp(tk.Tk):
         self.tun_var = tk.BooleanVar(value=bool(self.settings.get("tun", False)))
         self.lan_var = tk.BooleanVar(value=bool(self.settings.get("allow_lan", False)))
         self.log_level_var = tk.StringVar(value=self.settings.get("log_level", "info"))
-        self.skin_var = tk.StringVar(value=self.settings.get("skin", "清新蓝"))
+        self.skin_var = tk.StringVar(value=self.settings.get("skin", "羽毛渐变"))
         self.font_size_var = tk.IntVar(value=int(self.settings.get("font_size") or 10))
         self.group_var = tk.StringVar(value=self.settings.get("group_filter", "全部"))
         self.route_mode_var = tk.StringVar(value=self.settings.get("route_mode", "bypass_cn"))
@@ -1782,15 +1723,111 @@ class NetBridgeApp(tk.Tk):
             return base
 
     def _skin(self) -> dict:
-        return SKINS.get(self.skin_var.get(), SKINS["清新蓝"])
+        return SKINS.get(self.skin_var.get(), SKINS.get("羽毛渐变", SKINS["清新蓝"]))
+
+
+    def _make_gradient_image(self, w=480, h=800):
+        if Image is None:
+            try:
+                from PIL import Image as _Image
+            except Exception:
+                return None
+        else:
+            _Image = Image
+        img = _Image.new("RGB", (max(w, 2), max(h, 2)))
+        px = img.load()
+        H, W = img.size[1], img.size[0]
+        for y in range(H):
+            for x in range(W):
+                t = (y / max(H - 1, 1)) * 0.7 + (x / max(W - 1, 1)) * 0.3
+                if t < 0.4:
+                    u = t / 0.4
+                    r = int(236 + (140 - 236) * u)
+                    g = int(140 + (80 - 140) * u)
+                    b = int(250 + (230 - 250) * u)
+                else:
+                    u = (t - 0.4) / 0.6
+                    r = int(140 + (80 - 140) * u)
+                    g = int(80 + (190 - 80) * u)
+                    b = int(230 + (250 - 230) * u)
+                # lighten for UI readability
+                r = int(r * 0.5 + 255 * 0.5)
+                g = int(g * 0.5 + 255 * 0.5)
+                b = int(b * 0.5 + 255 * 0.5)
+                px[x, y] = (r, g, b)
+        return img
+
+    def _on_resize_gradient(self, event):
+        if event.widget is not self:
+            return
+        if getattr(self, "_resize_job", None):
+            try:
+                self.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        self._resize_job = self.after(200, self._apply_gradient_bg)
+
+    def _apply_gradient_bg(self):
+
+        """粉紫蓝渐变底色（对齐羽毛图）。"""
+        sk = self._skin()
+        if not sk.get("gradient"):
+            try:
+                if hasattr(self, "_bg_label"):
+                    self._bg_label.place_forget()
+            except Exception:
+                pass
+            self.configure(bg=sk["bg"])
+            return
+        try:
+            from PIL import ImageTk as _ImageTk
+        except Exception:
+            self.configure(bg=sk["bg"])
+            return
+        try:
+            self.update_idletasks()
+            w = max(self.winfo_width(), 460)
+            h = max(self.winfo_height(), 760)
+            # prefer asset
+            path = Path(__file__).resolve().parent / "bg_gradient.png"
+            if getattr(sys, "frozen", False):
+                p2 = Path(sys.executable).resolve().parent / "bg_gradient.png"
+                if p2.is_file():
+                    path = p2
+            if path.is_file():
+                from PIL import Image as _Image
+                img = _Image.open(path).convert("RGB").resize((w, h))
+            else:
+                img = self._make_gradient_image(w, h)
+            if img is None:
+                self.configure(bg=sk["bg"])
+                return
+            self._bg_photo = _ImageTk.PhotoImage(img)
+            if not hasattr(self, "_bg_label") or self._bg_label is None:
+                self._bg_label = tk.Label(self, image=self._bg_photo, borderwidth=0)
+                self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+                self._bg_label.lower()
+            else:
+                self._bg_label.configure(image=self._bg_photo)
+                self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
+                self._bg_label.lower()
+            self.configure(bg=sk["bg"])
+        except Exception:
+            self.configure(bg=sk["bg"])
 
     def _rebuild_colors(self):
         sk = self._skin()
         try:
-            self.configure(bg=sk["bg"])
-            self.canvas.configure(bg=sk["bg"])
+            self._apply_gradient_bg()
+            # 半透明卡片感：主画布用浅色
+            cbg = "#FFFFFF" if sk.get("gradient") else sk["bg"]
+            if hasattr(self, "canvas"):
+                self.canvas.configure(bg=cbg)
         except Exception:
-            pass
+            try:
+                self.configure(bg=sk["bg"])
+            except Exception:
+                pass
 
     def _apply_skin(self):
         sk = self._skin()
@@ -2020,6 +2057,11 @@ class NetBridgeApp(tk.Tk):
         self.btn_id = self.canvas.create_oval(10, 10, 170, 170, fill=BLUE, outline="")
         self.txt_id = self.canvas.create_text(90, 90, text="连接", fill="white", font=("Segoe UI", 18, "bold"))
         self.canvas.bind("<Button-1>", lambda e: self._toggle())
+        self.btn_disconnect = self._glass_btn(
+            self, "断开连接", self._disconnect, primary=False, padx=18, pady=6
+        )
+        self.btn_disconnect.pack(pady=(4, 0))
+
 
         self.lbl_proxy = tk.Label(
             self, text="",
@@ -2034,6 +2076,7 @@ class NetBridgeApp(tk.Tk):
             ("节点", self._open_nodes),
             ("订阅", self._import_sub_dialog),
             ("测试", self._test_nodes_dialog),
+            ("断开", self._disconnect),
             ("添加", self._add_node_dialog),
             ("托盘", self._hide_to_tray),
             ("日志", self._show_log),
@@ -2079,6 +2122,12 @@ class NetBridgeApp(tk.Tk):
                 self.group_box["values"] = self._node_groups()
         except Exception:
             pass
+        try:
+            if hasattr(self, "btn_disconnect"):
+                st = "normal" if self.status == "connected" else "disabled"
+                self.btn_disconnect.configure(state=st)
+        except Exception:
+            pass
         port = self.settings.get("mixed_port", MIXED_PORT)
         host = "0.0.0.0" if self.lan_var.get() else "127.0.0.1"
         mode = []
@@ -2103,7 +2152,22 @@ class NetBridgeApp(tk.Tk):
             tip = "核心已内置" if bundled else "首次连接将下载核心"
             self.lbl_status.config(text=f"订阅/WS/gRPC/Reality · 系统代理/TUN · {tip}")
 
+    def _disconnect(self):
+        """断开连接并关闭系统代理。"""
+        try:
+            stop_core()
+        except Exception:
+            pass
+        self.status = "disconnected"
+        try:
+            self._stop_connect_anim()
+        except Exception:
+            pass
+        self.lbl_status.config(text="已断开连接")
+        self._refresh()
+
     def _toggle(self):
+
         if self.status == "connected":
             stop_core()
             self.status = "disconnected"
@@ -2516,6 +2580,7 @@ class NetBridgeApp(tk.Tk):
                 pystray.MenuItem("显示主窗口", on_show, default=True),
                 pystray.MenuItem("隐藏到托盘", on_hide),
                 pystray.MenuItem("连接 / 断开", on_toggle),
+                pystray.MenuItem("断开连接", lambda icon, item: self.after(0, self._disconnect)),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("退出", on_quit),
             )

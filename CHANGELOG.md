@@ -1,24 +1,33 @@
 # Changelog
 
-## [1.0.0] - 2026-10-07
+## [1.2.0] - 2026-10-08
 
-首个正式整合版。
+今日功能整合正式版。
 
-### 功能
-- 小火箭风格 Windows GUI（Tkinter 便携）
+### 界面
+- 羽毛 / 金翅鸟应用图标与托盘图标
+- 粉紫蓝「羽毛渐变」默认底色，多皮肤可选
+- 字号调节、圆角高亮按钮
+- 连接中动画、断开连接按钮
+- 系统托盘显示/隐藏
+
+### 代理与核心
+- 默认端口 7890
 - sing-box / Xray 双核心，发布包内置
-- 订阅导入、WS/gRPC/Reality
-- 系统代理 / TUN
-- 允许局域网连接（0.0.0.0）
-- 日志等级可选
-- 一键多线程节点延迟测试 + 当前节点测速
-- 默认端口 1314
-- 去除 legacy special outbounds 告警
+- Trojan/WS/TLS 对齐 v2rayN 常见配置（allowInsecure、host/sni/path）
+- 分流：bypass_cn / global / direct
+- 启动前释放端口，避免 7890 占用失败
+- 订阅分组、延迟测试排序
 
-### 构建
-- GitHub Actions：Windows / Linux / macOS / Android / iOS
-- 发版前清理同 tag 旧附件
-- 产物短文件名（无 portable 后缀）
+### 其它
+- 检查更新：镜像 + 本地代理回退
+- 版本与 Release 徽章自动一致（构建注入 APP_VERSION）
+- 专有许可 LICENSE
 
-### 移除
-- HarmonyOS 自动构建
+## [1.1.x]
+
+迭代：UI、托盘、更新检查、分流初版、图标等。
+
+## [1.0.0]
+
+首个可发布 Windows 便携包与多平台 CI。
