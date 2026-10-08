@@ -143,28 +143,165 @@ def alert_error():
         pass
 
 
-def check_github_update(timeout: float = 6.0) -> tuple[bool, str]:
-    """检查 GitHub Releases 是否有新版本。返回 (有更新, 消息)。"""
-    try:
-        url = "https://api.github.com/repos/Cuarentas/NetBridge/releases/latest"
-        req = urllib.request.Request(url, headers={"User-Agent": f"NetBridge/{APP_VERSION}"})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        tag = (data.get("tag_name") or "").lstrip("vV")
-        if not tag:
-            return False, "无法解析最新版本"
-        def norm(v):
-            parts = []
-            for x in re.split(r"[^0-9]+", v):
-                if x.isdigit():
-                    parts.append(int(x))
-            return parts or [0]
-        if norm(tag) > norm(APP_VERSION):
-            return True, f"发现新版本 {tag}（当前 {APP_VERSION}）\n请前往 GitHub Releases 下载。"
-        return False, f"已是最新版本（{APP_VERSION}）"
-    except Exception as e:
-        return False, f"检查更新失败: {e}"
+RELEASES_PAGE = "https://github.com/Cuarentas/NetBridge/releases"
+RELEASES_API = "https://api.github.com/repos/Cuarentas/NetBridge/releases/latest"
+# 国内等网络环境下 api.github.com 常不可达，增加镜像回退
+RELEASES_API_MIRRORS = [
+    RELEASES_API,
+    "https://ghproxy.net/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
+    "https://mirror.ghproxy.com/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
+    "https://gh.ddlc.top/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
+]
 
+
+def _norm_ver(v: str) -> list:
+    parts = []
+    for x in re.split(r"[^0-9]+", (v or "").lstrip("vV")):
+        if x.isdigit():
+            parts.append(int(x))
+    return parts or [0]
+
+
+def _http_get_json(url: str, timeout: float = 12.0, use_proxy: bool | None = None) -> dict:
+    """GET JSON。use_proxy: None=先直连再试本地代理, True=仅代理, False=仅直连。"""
+    headers = {
+        "User-Agent": f"NetBridge/{APP_VERSION}",
+        "Accept": "application/vnd.github+json",
+    }
+    port = MIXED_PORT
+    try:
+        if SETTINGS_FILE.exists():
+            s = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            port = int(s.get("mixed_port") or MIXED_PORT)
+    except Exception:
+        pass
+    proxy_url = f"http://127.0.0.1:{port}"
+
+    def do(opener):
+        req = urllib.request.Request(url, headers=headers)
+        with opener.open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+    errors = []
+    modes = []
+    if use_proxy is True:
+        modes = ["proxy"]
+    elif use_proxy is False:
+        modes = ["direct"]
+    else:
+        modes = ["direct", "proxy"]
+
+    for mode in modes:
+        try:
+            if mode == "direct":
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            else:
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+                )
+            return do(opener)
+        except Exception as e:
+            errors.append(f"{mode}:{e}")
+    raise RuntimeError("; ".join(errors[-4:]))
+
+
+
+RELEASES_PAGE = "https://github.com/Cuarentas/NetBridge/releases"
+RELEASES_API = "https://api.github.com/repos/Cuarentas/NetBridge/releases/latest"
+RELEASES_API_MIRRORS = [
+    RELEASES_API,
+    "https://ghproxy.net/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
+    "https://mirror.ghproxy.com/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
+    "https://gh.ddlc.top/https://api.github.com/repos/Cuarentas/NetBridge/releases/latest",
+]
+
+
+def _norm_ver(v: str) -> list:
+    parts = []
+    for x in re.split(r"[^0-9]+", (v or "").lstrip("vV")):
+        if x.isdigit():
+            parts.append(int(x))
+    return parts or [0]
+
+
+def _http_get_json(url: str, timeout: float = 12.0) -> dict:
+    """GET JSON：先直连，失败再走本地混合代理。"""
+    headers = {
+        "User-Agent": f"NetBridge/{APP_VERSION}",
+        "Accept": "application/vnd.github+json",
+    }
+    port = MIXED_PORT
+    try:
+        if SETTINGS_FILE.exists():
+            s = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            port = int(s.get("mixed_port") or MIXED_PORT)
+    except Exception:
+        pass
+    proxy_url = f"http://127.0.0.1:{port}"
+    errors = []
+    for mode in ("direct", "proxy"):
+        try:
+            if mode == "direct":
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            else:
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+                )
+            req = urllib.request.Request(url, headers=headers)
+            with opener.open(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8", errors="replace"))
+        except Exception as e:
+            errors.append(f"{mode}:{e}")
+    raise RuntimeError("; ".join(errors[-4:]))
+
+
+def check_github_update(timeout: float = 12.0):
+    """返回 (有更新, 消息, release或None)。"""
+    last_err = ""
+    data = None
+    for url in RELEASES_API_MIRRORS:
+        try:
+            data = _http_get_json(url, timeout=timeout)
+            if data and data.get("tag_name"):
+                break
+        except Exception as e:
+            last_err = str(e)
+            data = None
+    if not data:
+        return False, f"无法连接 GitHub 检查更新。\n{last_err}\n\n可手动打开:\n{RELEASES_PAGE}", None
+    tag = (data.get("tag_name") or "").lstrip("vV")
+    if not tag:
+        return False, "无法解析最新版本号", data
+    if _norm_ver(tag) > _norm_ver(APP_VERSION):
+        return True, f"发现新版本 v{tag}（当前 v{APP_VERSION}）", data
+    return False, f"已是最新版本（v{APP_VERSION}）", data
+
+
+def find_windows_asset(release) -> str | None:
+    if not release:
+        return None
+    for a in release.get("assets") or []:
+        name = (a.get("name") or "").lower()
+        if "windows" in name and name.endswith(".zip") and a.get("browser_download_url"):
+            return a["browser_download_url"]
+    for a in release.get("assets") or []:
+        if (a.get("name") or "").endswith(".zip") and a.get("browser_download_url"):
+            return a["browser_download_url"]
+    return release.get("html_url") or RELEASES_PAGE
+
+
+def open_in_browser(url: str):
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        return
+    except Exception:
+        pass
+    try:
+        if is_windows():
+            os.startfile(url)  # type: ignore
+    except Exception:
+        pass
 
 
 # ===================== platform helpers =====================
@@ -1506,13 +1643,30 @@ class NetBridgeApp(tk.Tk):
         self.lbl_status.config(text="正在检查更新…")
 
         def work():
-            ok, msg = check_github_update()
+            try:
+                ok, msg, release = check_github_update()
+            except Exception as e:
+                ok, msg, release = False, str(e), None
+
             def ui():
-                self.lbl_status.config(text=msg.split("\n")[0])
+                self.lbl_status.config(text=(msg or "").split("\n")[0][:80])
                 if ok:
-                    messagebox.showinfo("发现更新", msg)
+                    url = find_windows_asset(release) or RELEASES_PAGE
+                    if messagebox.askyesno(
+                        "发现更新",
+                        msg + "\n\n是否打开下载页面？\n（下载后请解压覆盖安装）",
+                    ):
+                        open_in_browser(url)
                 else:
-                    messagebox.showinfo("检查更新", msg)
+                    if "无法连接" in (msg or ""):
+                        if messagebox.askyesno(
+                            "检查更新失败",
+                            msg + "\n\n是否在浏览器中打开 Releases 页面？",
+                        ):
+                            open_in_browser(RELEASES_PAGE)
+                    else:
+                        messagebox.showinfo("检查更新", msg)
+
             self.after(0, ui)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1522,11 +1676,22 @@ class NetBridgeApp(tk.Tk):
             return
 
         def work():
-            has, msg = check_github_update()
-            if has:
-                self.after(0, lambda: messagebox.showinfo("发现更新", msg))
+            try:
+                has, msg, release = check_github_update()
+            except Exception:
+                return
+            if not has:
+                return
+
+            def ui():
+                url = find_windows_asset(release) or RELEASES_PAGE
+                if messagebox.askyesno("发现更新", msg + "\n\n是否打开下载页面？"):
+                    open_in_browser(url)
+
+            self.after(0, ui)
 
         threading.Thread(target=work, daemon=True).start()
+
 
     def _build_ui(self):
         # core row
