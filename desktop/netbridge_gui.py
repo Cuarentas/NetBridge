@@ -15,6 +15,10 @@ import base64
 import json
 import os
 import platform
+try:
+    import winsound
+except Exception:
+    winsound = None
 import re
 import shutil
 import signal
@@ -31,6 +35,14 @@ import zipfile
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    HAS_TRAY = True
+except Exception:
+    pystray = None
+    HAS_TRAY = False
 
 # ===================== paths =====================
 def app_dir() -> Path:
@@ -52,7 +64,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.1.0"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -84,13 +96,25 @@ def save_json(path: Path, data):
 
 
 # ===================== settings =====================
+SKINS = {
+    "清新蓝": {"bg": "#E8F1FF", "card": "#FFFFFF", "accent": "#007AFF", "text": "#0A1628", "secondary": "#5B6B7C", "btn": "#007AFF", "btn_fg": "#FFFFFF"},
+    "暗夜灰": {"bg": "#1C1C1E", "card": "#2C2C2E", "accent": "#0A84FF", "text": "#F5F5F7", "secondary": "#8E8E93", "btn": "#0A84FF", "btn_fg": "#FFFFFF"},
+    "薄荷绿": {"bg": "#E8F8F0", "card": "#FFFFFF", "accent": "#34C759", "text": "#0A2818", "secondary": "#5A7A68", "btn": "#34C759", "btn_fg": "#FFFFFF"},
+    "暮橙": {"bg": "#FFF1E6", "card": "#FFFFFF", "accent": "#FF9F0A", "text": "#2A1A0A", "secondary": "#8A7040", "btn": "#FF9F0A", "btn_fg": "#FFFFFF"},
+    "紫霞": {"bg": "#F3E8FF", "card": "#FFFFFF", "accent": "#BF5AF2", "text": "#1A0A28", "secondary": "#7A6A8A", "btn": "#BF5AF2", "btn_fg": "#FFFFFF"},
+}
+
 DEFAULT_SETTINGS = {
     "core": "sing-box",
     "system_proxy": True,
     "tun": False,
     "mixed_port": MIXED_PORT,
     "allow_lan": False,
-    "log_level": "info",  # trace/debug/info/warn/error/fatal/panic
+    "log_level": "info",
+    "skin": "清新蓝",
+    "font_size": 10,
+    "auto_update_check": True,
+    "group_filter": "全部",
 }
 
 
@@ -106,6 +130,41 @@ def load_settings() -> dict:
 
 def save_settings(s: dict):
     save_json(SETTINGS_FILE, s)
+
+
+def alert_error():
+    """错误提示音。"""
+    try:
+        if is_windows() and winsound is not None:
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        else:
+            print("\a", end="", flush=True)
+    except Exception:
+        pass
+
+
+def check_github_update(timeout: float = 6.0) -> tuple[bool, str]:
+    """检查 GitHub Releases 是否有新版本。返回 (有更新, 消息)。"""
+    try:
+        url = "https://api.github.com/repos/Cuarentas/NetBridge/releases/latest"
+        req = urllib.request.Request(url, headers={"User-Agent": f"NetBridge/{APP_VERSION}"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        tag = (data.get("tag_name") or "").lstrip("vV")
+        if not tag:
+            return False, "无法解析最新版本"
+        def norm(v):
+            parts = []
+            for x in re.split(r"[^0-9]+", v):
+                if x.isdigit():
+                    parts.append(int(x))
+            return parts or [0]
+        if norm(tag) > norm(APP_VERSION):
+            return True, f"发现新版本 {tag}（当前 {APP_VERSION}）\n请前往 GitHub Releases 下载。"
+        return False, f"已是最新版本（{APP_VERSION}）"
+    except Exception as e:
+        return False, f"检查更新失败: {e}"
+
 
 
 # ===================== platform helpers =====================
@@ -978,49 +1037,77 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
     ensure_dirs()
     stop_core()
 
+    # 核心日志至少 info，否则界面选 error 时看不到 started，会误判失败
+    settings = dict(settings)
+    lv = (settings.get("log_level") or "info").lower()
+    if lv in ("warn", "error", "fatal", "panic"):
+        settings["log_level"] = "info"
+
     if core == "xray":
-        if settings.get("tun"):
-            if log_cb:
-                log_cb("TUN 目前仅 sing-box 支持，已忽略 TUN")
+        if settings.get("tun") and log_cb:
+            log_cb("TUN 目前仅 sing-box 支持，已忽略 TUN")
         binary = download_xray(log_cb)
         cfg = build_xray_config(node, settings)
-        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        cmd = [str(binary), "run", "-c", str(CONFIG_FILE)]
     else:
         binary = download_singbox(log_cb)
         cfg = build_singbox_config(node, settings)
-        CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-        cmd = [str(binary), "run", "-c", str(CONFIG_FILE)]
+
+    binary = Path(binary)
+    if not binary.is_file() or binary.stat().st_size < 1000:
+        raise RuntimeError(f"核心文件无效或不存在:\n{binary}\n请重新下载发布包或检查网络后重试连接。")
+
+    CONFIG_FILE.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    cmd = [str(binary.resolve()), "run", "-c", str(CONFIG_FILE.resolve())]
 
     log_f = open(LOG_FILE, "w", encoding="utf-8", buffering=1)
+    log_f.write(f"NetBridge {app_version()} starting\n")
+    log_f.write(f"cmd: {' '.join(cmd)}\n")
+    log_f.write(f"bin exists: {binary.is_file()} size={binary.stat().st_size}\n")
+    log_f.flush()
+
     env = os.environ.copy()
     env.setdefault("ENABLE_DEPRECATED_TUN_ADDRESS_X", "true")
     env.setdefault("ENABLE_DEPRECATED_SPECIAL_OUTBOUNDS", "true")
-    kwargs = {"stdout": log_f, "stderr": subprocess.STDOUT, "env": env, **no_window_kwargs()}
-    proc = subprocess.Popen(cmd, **kwargs)
-    PID_FILE.write_text(str(proc.pid), encoding="utf-8")
-    time.sleep(0.25)
-    if proc.poll() is not None:
+    kwargs = {
+        "stdout": log_f,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+        "cwd": str(binary.parent),
+        **no_window_kwargs(),
+    }
+    try:
+        proc = subprocess.Popen(cmd, **kwargs)
+    except Exception as e:
+        log_f.write(f"Popen failed: {e}\n")
         log_f.close()
-        err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-2500:]
-        PID_FILE.unlink(missing_ok=True)
-        raise RuntimeError(f"核心启动失败:\n{err}")
+        raise RuntimeError(f"无法启动核心进程: {e}")
+
+    PID_FILE.write_text(str(proc.pid), encoding="utf-8")
+
+    # 等待启动：进程存活即可（约 0.8s 内判断）
+    for _ in range(8):
+        time.sleep(0.1)
+        if proc.poll() is not None:
+            break
+        if wait_port_open("127.0.0.1", int(settings.get("mixed_port") or MIXED_PORT), tries=1, delay=0):
+            break
 
     port = int(settings.get("mixed_port") or MIXED_PORT)
 
-    # 等待端口就绪（最多约 6 秒）
-    ok = wait_port_open("127.0.0.1", port, tries=6, delay=0.15)
-    if not ok:
-        # 进程还在但端口未开 → 仍报错
-        if proc.poll() is not None:
+    if proc.poll() is not None:
+        log_f.flush()
+        try:
             log_f.close()
-            err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-2500:]
-            PID_FILE.unlink(missing_ok=True)
-            raise RuntimeError(f"核心已退出:\n{err}")
-        if log_cb:
-            log_cb(f"警告: 127.0.0.1:{port} 尚未就绪，请稍候或查看日志")
+        except Exception:
+            pass
+        err = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
+        PID_FILE.unlink(missing_ok=True)
+        raise RuntimeError(f"核心启动失败（进程已退出）:\n{err}")
 
-    # TUN 失败率高：未开 TUN 时默认开系统代理；开了 TUN 也尽量再开系统代理兜底
+    # 进程仍在 → 视为启动成功（不依赖日志里的 started 字样）
+    if log_cb:
+        log_cb(f"核心进程已运行 PID={proc.pid}")
+
     want_proxy = settings.get("system_proxy") or not settings.get("tun")
     if want_proxy:
         try:
@@ -1029,7 +1116,7 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
                 log_cb(f"系统代理已设为 127.0.0.1:{port}")
         except Exception as e:
             if log_cb:
-                log_cb(f"系统代理设置失败: {e}（可手动设置 127.0.0.1:{port}）")
+                log_cb(f"系统代理设置失败: {e}（请手动设 127.0.0.1:{port}）")
 
 
 
@@ -1162,14 +1249,36 @@ def sort_nodes_by_latency(nodes: list[dict]) -> list[dict]:
     return nodes
 
 
+
+def make_tray_image():
+    """托盘图标：优先使用羽毛图标文件。"""
+    for c in (
+        Path(__file__).resolve().parent / "netbridge.png",
+        Path(sys.executable).resolve().parent / "netbridge.png" if getattr(sys, "frozen", False) else None,
+        ROOT / "netbridge.png",
+    ):
+        if c and Path(c).is_file():
+            try:
+                return Image.open(c).convert("RGBA").resize((64, 64))
+            except Exception:
+                pass
+    size = 64
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse((4, 4, size - 4, size - 4), fill=(0, 122, 255, 255))
+    d.ellipse((18, 14, size - 18, size - 18), fill=(255, 255, 255, 235))
+    return img
+
+
 # ===================== GUI =====================
 class NetBridgeApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title(f"NetBridge {app_version()}")
-        self.geometry("440x720")
-        self.minsize(400, 640)
+        self.title(f"NetBridge {APP_VERSION}")
+        self.geometry("460x760")
+        self.minsize(420, 680)
         self.configure(bg=BG)
+        self._set_window_icon()
 
         ensure_dirs()
         self.settings = load_settings()
@@ -1181,8 +1290,13 @@ class NetBridgeApp(tk.Tk):
         self.tun_var = tk.BooleanVar(value=bool(self.settings.get("tun", False)))
         self.lan_var = tk.BooleanVar(value=bool(self.settings.get("allow_lan", False)))
         self.log_level_var = tk.StringVar(value=self.settings.get("log_level", "info"))
+        self.skin_var = tk.StringVar(value=self.settings.get("skin", "清新蓝"))
+        self.font_size_var = tk.IntVar(value=int(self.settings.get("font_size") or 10))
+        self.group_var = tk.StringVar(value=self.settings.get("group_filter", "全部"))
         self.upload = "0 B/s"
         self.download = "0 B/s"
+        self._anim_job = None
+        self._anim_phase = 0
 
         if not self.nodes:
             self.nodes = [{
@@ -1198,6 +1312,10 @@ class NetBridgeApp(tk.Tk):
         self._build_ui()
         self._refresh()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._tray = None
+        self._tray_thread = None
+        self._setup_tray()
+        self.after(1500, self._maybe_auto_update_check)
 
     def current_node(self) -> dict:
         if not self.nodes:
@@ -1214,7 +1332,177 @@ class NetBridgeApp(tk.Tk):
         self.settings["tun"] = self.tun_var.get()
         self.settings["allow_lan"] = self.lan_var.get()
         self.settings["log_level"] = self.log_level_var.get()
+        self.settings["skin"] = self.skin_var.get()
+        self.settings["font_size"] = int(self.font_size_var.get())
+        self.settings["group_filter"] = self.group_var.get()
         save_settings(self.settings)
+
+
+    def _set_window_icon(self):
+        for c in (
+            Path(__file__).resolve().parent / "netbridge.ico",
+            ROOT / "netbridge.ico",
+            Path(sys.executable).resolve().parent / "netbridge.ico" if getattr(sys, "frozen", False) else None,
+        ):
+            if c and Path(c).is_file():
+                try:
+                    self.iconbitmap(default=str(c))
+                    return
+                except Exception:
+                    pass
+        for c in (
+            Path(__file__).resolve().parent / "netbridge.png",
+            ROOT / "netbridge.png",
+        ):
+            if c and Path(c).is_file():
+                try:
+                    img = tk.PhotoImage(file=str(c))
+                    self.iconphoto(True, img)
+                    self._icon_img = img
+                    return
+                except Exception:
+                    pass
+
+    def _fs(self, base=10):
+        try:
+            return max(8, min(18, int(self.font_size_var.get()) + (base - 10)))
+        except Exception:
+            return base
+
+    def _skin(self) -> dict:
+        return SKINS.get(self.skin_var.get(), SKINS["清新蓝"])
+
+    def _rebuild_colors(self):
+        sk = self._skin()
+        try:
+            self.configure(bg=sk["bg"])
+            self.canvas.configure(bg=sk["bg"])
+        except Exception:
+            pass
+
+    def _apply_skin(self):
+        sk = self._skin()
+        global BG, CARD, TEXT, SECONDARY, BLUE, GREEN
+        BG, CARD = sk["bg"], sk["card"]
+        TEXT, SECONDARY = sk["text"], sk["secondary"]
+        BLUE = sk["accent"]
+        self.configure(bg=BG)
+        try:
+            self._rebuild_colors()
+        except Exception:
+            pass
+        self._persist_settings()
+        self._refresh()
+
+    def _glass_btn(self, parent, text, command, primary=False, padx=12, pady=8):
+        sk = self._skin()
+        bg = sk["btn"] if primary else sk["card"]
+        fg = sk["btn_fg"] if primary else sk["text"]
+        btn = tk.Button(
+            parent,
+            text=text,
+            command=command,
+            font=("Segoe UI", self._fs(10)),
+            bg=bg,
+            fg=fg,
+            activebackground=sk["accent"],
+            activeforeground="#FFFFFF",
+            relief="flat",
+            bd=0,
+            padx=padx,
+            pady=pady,
+            cursor="hand2",
+            highlightthickness=1,
+            highlightbackground=sk["accent"] if primary else "#D0D5DD",
+            highlightcolor=sk["accent"],
+        )
+        return btn
+
+    def _err(self, title, msg):
+        alert_error()
+        messagebox.showerror(title, msg)
+
+    def _warn(self, title, msg):
+        alert_error()
+        messagebox.showwarning(title, msg)
+
+    def _start_connect_anim(self):
+        self._stop_connect_anim()
+        self._anim_phase = 0
+
+        def tick():
+            if self.status != "connecting":
+                self._anim_job = None
+                return
+            self._anim_phase = (self._anim_phase + 1) % 6
+            sk = self._skin()
+            # pulse radius / color
+            colors = [sk["accent"], "#5AC8FA", sk["accent"], "#FFD60A", sk["accent"], "#64D2FF"]
+            c = colors[self._anim_phase]
+            try:
+                pad = 10 + (self._anim_phase % 3) * 2
+                self.canvas.coords(self.btn_id, pad, pad, 180 - pad, 180 - pad)
+                self.canvas.itemconfig(self.btn_id, fill=c)
+                dots = "." * (self._anim_phase % 4)
+                self.canvas.itemconfig(self.txt_id, text=f"连接中{dots}")
+            except Exception:
+                pass
+            self._anim_job = self.after(120, tick)
+
+        tick()
+
+    def _stop_connect_anim(self):
+        if self._anim_job:
+            try:
+                self.after_cancel(self._anim_job)
+            except Exception:
+                pass
+            self._anim_job = None
+        try:
+            self.canvas.coords(self.btn_id, 10, 10, 170, 170)
+        except Exception:
+            pass
+
+    def _node_groups(self):
+        groups = sorted({(n.get("group") or "默认") for n in self.nodes if n.get("server")})
+        return ["全部"] + groups
+
+    def _filtered_nodes_indices(self):
+        gf = self.group_var.get() or "全部"
+        out = []
+        for i, n in enumerate(self.nodes):
+            if not n.get("server"):
+                continue
+            g = n.get("group") or "默认"
+            if gf == "全部" or g == gf:
+                out.append(i)
+        return out
+
+    def _check_update_manual(self):
+        self.lbl_status.config(text="正在检查更新…")
+
+        def work():
+            ok, msg = check_github_update()
+            def ui():
+                self.lbl_status.config(text=msg.split("\n")[0])
+                if ok:
+                    messagebox.showinfo("发现更新", msg)
+                else:
+                    messagebox.showinfo("检查更新", msg)
+            self.after(0, ui)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _maybe_auto_update_check(self):
+        if not self.settings.get("auto_update_check", True):
+            return
+
+        def work():
+            has, msg = check_github_update()
+            if has:
+                self.after(0, lambda: messagebox.showinfo("发现更新", msg))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _build_ui(self):
         # core row
@@ -1247,6 +1535,22 @@ class NetBridgeApp(tk.Tk):
         )
         log_box.pack(side="left")
         log_box.bind("<<ComboboxSelected>>", lambda e: self._persist_settings())
+
+        opt3 = tk.Frame(self, bg=BG)
+        opt3.pack(fill="x", padx=16, pady=(4, 0))
+        tk.Label(opt3, text="皮肤", bg=BG, fg=SECONDARY).pack(side="left")
+        skin_box = ttk.Combobox(opt3, textvariable=self.skin_var, values=list(SKINS.keys()), width=8, state="readonly")
+        skin_box.pack(side="left", padx=4)
+        skin_box.bind("<<ComboboxSelected>>", lambda e: self._apply_skin())
+        tk.Label(opt3, text="字号", bg=BG, fg=SECONDARY).pack(side="left", padx=(8, 2))
+        font_box = ttk.Combobox(opt3, textvariable=self.font_size_var, values=[9, 10, 11, 12, 14, 16], width=4, state="readonly")
+        font_box.pack(side="left")
+        font_box.bind("<<ComboboxSelected>>", lambda e: (self._persist_settings(), self._refresh()))
+        tk.Label(opt3, text="分组", bg=BG, fg=SECONDARY).pack(side="left", padx=(8, 2))
+        self.group_box = ttk.Combobox(opt3, textvariable=self.group_var, values=self._node_groups(), width=8, state="readonly")
+        self.group_box.pack(side="left")
+        self.group_box.bind("<<ComboboxSelected>>", lambda e: (self._persist_settings(), self._refresh()))
+        self._glass_btn(opt3, "检查更新", self._check_update_manual, primary=False, padx=8, pady=2).pack(side="right")
 
         # node card
         top = tk.Frame(self, bg=CARD)
@@ -1281,12 +1585,11 @@ class NetBridgeApp(tk.Tk):
             ("订阅", self._import_sub_dialog),
             ("测试", self._test_nodes_dialog),
             ("添加", self._add_node_dialog),
+            ("托盘", self._hide_to_tray),
             ("日志", self._show_log),
         ]:
-            tk.Button(
-                bottom, text=text, font=("Segoe UI", 10), bg=CARD, relief="flat",
-                cursor="hand2", command=cmd, padx=8, pady=10,
-            ).pack(side="left", expand=True)
+            b = self._glass_btn(bottom, text, cmd, primary=False, padx=6, pady=10)
+            b.pack(side="left", expand=True, padx=2, pady=4)
 
         self.lbl_status = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=SECONDARY, wraplength=400)
         self.lbl_status.pack(pady=(0, 10))
@@ -1308,10 +1611,24 @@ class NetBridgeApp(tk.Tk):
         self.lbl_sub.config(
             text=f"{n.get('protocol', '?')} · {extra} · {n.get('server', '')}:{n.get('port', '')}{lat_s}{spd_s}"
         )
-        colors = {"disconnected": BLUE, "connecting": ORANGE, "connected": GREEN, "error": RED}
+        sk = self._skin()
+        colors = {"disconnected": sk["accent"], "connecting": ORANGE, "connected": GREEN, "error": RED}
         labels = {"disconnected": "连接", "connecting": "连接中", "connected": "已连接", "error": "重试"}
-        self.canvas.itemconfig(self.btn_id, fill=colors.get(self.status, BLUE))
-        self.canvas.itemconfig(self.txt_id, text=labels.get(self.status, "连接"))
+        if self.status == "connecting":
+            self._start_connect_anim()
+        else:
+            self._stop_connect_anim()
+            try:
+                self.canvas.itemconfig(self.btn_id, fill=colors.get(self.status, sk["accent"]))
+                self.canvas.itemconfig(self.txt_id, text=labels.get(self.status, "连接"))
+                self.canvas.coords(self.btn_id, 10, 10, 170, 170)
+            except Exception:
+                pass
+        try:
+            if hasattr(self, "group_box"):
+                self.group_box["values"] = self._node_groups()
+        except Exception:
+            pass
         port = self.settings.get("mixed_port", MIXED_PORT)
         host = "0.0.0.0" if self.lan_var.get() else "127.0.0.1"
         mode = []
@@ -1350,7 +1667,7 @@ class NetBridgeApp(tk.Tk):
             return
         node = self.current_node()
         if not node.get("server"):
-            messagebox.showwarning("提示", "请先添加节点或导入订阅")
+            self._warn("提示", "请先添加节点或导入订阅")
             self._import_sub_dialog()
             return
         self._persist_settings()
@@ -1366,7 +1683,7 @@ class NetBridgeApp(tk.Tk):
                 start_core(self.core_var.get(), node, self.settings, log)
 
                 # 端口就绪即显示已连接，外网探测放到后台，避免一直「连接中」
-                if wait_port_open("127.0.0.1", port, tries=5, delay=0.1) or log_says_core_started():
+                if True:  # start_core 未抛错即成功
                     self.status = "connected"
                     self.after(0, lambda: self.lbl_status.config(
                         text=f"已连接 · 请设系统代理 127.0.0.1:{port}"
@@ -1407,7 +1724,7 @@ class NetBridgeApp(tk.Tk):
             except Exception as e:
                 self.status = "error"
                 err = str(e)
-                self.after(0, lambda m=err: messagebox.showerror("连接失败", m))
+                self.after(0, lambda m=err: self._err("连接失败", m))
                 self.after(0, self._refresh)
 
         threading.Thread(target=work, daemon=True).start()
@@ -1416,9 +1733,12 @@ class NetBridgeApp(tk.Tk):
         for w in frame.winfo_children():
             w.destroy()
         # 列表顺序与 self.nodes 一致（测试后已按延迟从低到高排列）
+        gf = self.group_var.get() or "全部"
         for i in range(len(self.nodes)):
             n = self.nodes[i]
             if not n.get("server"):
+                continue
+            if gf != "全部" and (n.get("group") or "默认") != gf:
                 continue
             label = n.get("name") or f"{n.get('server')}:{n.get('port')}"
             net = n.get("network") or "tcp"
@@ -1431,7 +1751,8 @@ class NetBridgeApp(tk.Tk):
                 lat_s = f"{lat}ms"
             spd = n.get("speed_kbps")
             spd_s = f" | {spd:.0f}KB/s" if isinstance(spd, (int, float)) and spd > 0 else ""
-            sub = f"{lat_s}{spd_s} · {n.get('protocol')} · {net} · {n.get('server')}:{n.get('port')}"
+            grp = n.get("group") or "默认"
+            sub = f"[{grp}] {lat_s}{spd_s} · {n.get('protocol')} · {net} · {n.get('server')}:{n.get('port')}"
 
             def select(idx=i):
                 self.current_index = idx
@@ -1471,7 +1792,7 @@ class NetBridgeApp(tk.Tk):
     def _run_batch_test(self, win, frame, lbl):
         valid = [n for n in self.nodes if n.get("server")]
         if not valid:
-            messagebox.showwarning("提示", "没有可测试的节点")
+            self._warn("提示", "没有可测试的节点")
             return
         lbl.config(text="测试中（多线程延迟）...")
         self.lbl_status.config(text="正在多线程测试节点延迟...")
@@ -1513,7 +1834,7 @@ class NetBridgeApp(tk.Tk):
         """主界面一键测试入口。"""
         valid = [n for n in self.nodes if n.get("server")]
         if not valid:
-            messagebox.showwarning("提示", "请先添加或导入节点")
+            self._warn("提示", "请先添加或导入节点")
             return
         self.lbl_status.config(text=f"正在测试 {len(valid)} 个节点延迟（多线程）...")
         self.status = self.status  # keep
@@ -1567,6 +1888,12 @@ class NetBridgeApp(tk.Tk):
         win.geometry("460x360")
         win.configure(bg=BG)
         tk.Label(win, text="粘贴订阅 URL，或多行 ss/vmess/vless/trojan 链接", bg=BG).pack(pady=8)
+        gf = tk.Frame(win, bg=BG)
+        gf.pack(fill="x", padx=10)
+        tk.Label(gf, text="分组名称", bg=BG).pack(side="left")
+        group_ent = tk.Entry(gf, width=16)
+        group_ent.insert(0, "默认")
+        group_ent.pack(side="left", padx=6)
         txt = scrolledtext.ScrolledText(win, height=12, font=("Consolas", 10))
         txt.pack(fill="both", expand=True, padx=12, pady=4)
 
@@ -1595,10 +1922,12 @@ class NetBridgeApp(tk.Tk):
                     for n in self.nodes if n.get("server")
                 }
                 added = 0
+                gname = group_ent.get().strip() or "默认"
                 for n in nodes:
                     key = f"{n.get('server')}:{n.get('port')}:{n.get('protocol')}"
                     if key in existing:
                         continue
+                    n["group"] = gname
                     self.nodes.append(n)
                     existing.add(key)
                     added += 1
@@ -1622,6 +1951,7 @@ class NetBridgeApp(tk.Tk):
         fields = {}
         specs = [
             ("名称", "name", ""),
+            ("分组", "group", "默认"),
             ("协议(ss/vmess/vless/trojan/socks)", "protocol", "vless"),
             ("服务器", "server", ""),
             ("端口", "port", "443"),
@@ -1658,6 +1988,7 @@ class NetBridgeApp(tk.Tk):
             reality_s = fields["reality"].get().strip().lower()
             node = {
                 "name": fields["name"].get().strip() or fields["server"].get().strip(),
+                "group": (fields["group"].get().strip() if "group" in fields else "") or "默认",
                 "protocol": fields["protocol"].get().strip().lower() or "ss",
                 "server": fields["server"].get().strip(),
                 "port": port,
@@ -1708,9 +2039,96 @@ class NetBridgeApp(tk.Tk):
             txt.insert("end", LOG_FILE.read_text(encoding="utf-8", errors="replace")[-5000:])
         txt.config(state="disabled")
 
+    def _setup_tray(self):
+        """初始化系统托盘（右下角图标）。"""
+        self._tray = None
+        if not HAS_TRAY:
+            return
+        try:
+            image = make_tray_image()
+
+            def on_show(icon=None, item=None):
+                self.after(0, self._show_from_tray)
+
+            def on_hide(icon=None, item=None):
+                self.after(0, self._hide_to_tray)
+
+            def on_toggle(icon=None, item=None):
+                self.after(0, self._toggle)
+
+            def on_quit(icon=None, item=None):
+                self.after(0, self._quit_app)
+
+            menu = pystray.Menu(
+                pystray.MenuItem("显示主窗口", on_show, default=True),
+                pystray.MenuItem("隐藏到托盘", on_hide),
+                pystray.MenuItem("连接 / 断开", on_toggle),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("退出", on_quit),
+            )
+            self._tray = pystray.Icon("NetBridge", image, f"NetBridge {app_version()}", menu)
+
+            def run_tray():
+                try:
+                    self._tray.run()
+                except Exception:
+                    pass
+
+            self._tray_thread = threading.Thread(target=run_tray, daemon=True)
+            self._tray_thread.start()
+        except Exception:
+            self._tray = None
+
+    def _show_from_tray(self):
+        try:
+            self.deiconify()
+            self.lift()
+            self.focus_force()
+            self.attributes("-topmost", True)
+            self.after(200, lambda: self.attributes("-topmost", False))
+        except Exception:
+            pass
+
+    def _hide_to_tray(self):
+        try:
+            self.withdraw()
+            if self._tray is not None:
+                try:
+                    self._tray.notify("NetBridge 仍在运行", "已最小化到托盘，双击图标可恢复窗口")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def _quit_app(self):
+        try:
+            if self._tray is not None:
+                try:
+                    self._tray.stop()
+                except Exception:
+                    pass
+                self._tray = None
+        except Exception:
+            pass
+        try:
+            stop_core()
+        except Exception:
+            pass
+        try:
+            SYS_PROXY.disable()
+        except Exception:
+            pass
+        try:
+            self.destroy()
+        except Exception:
+            pass
+
     def _on_close(self):
-        stop_core()
-        self.destroy()
+        # 点关闭：隐藏到托盘而不是退出（无托盘则真正退出）
+        if HAS_TRAY and self._tray is not None:
+            self._hide_to_tray()
+            return
+        self._quit_app()
 
 
 def main():
