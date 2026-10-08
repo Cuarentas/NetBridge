@@ -65,7 +65,7 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.11.0"
 XRAY_VER = "25.3.6"
 MIXED_PORT = 7890
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -707,25 +707,39 @@ CN_DOMAIN_SUFFIX = [
 
 
 def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
-    """系统代理绕过列表：绕过大陆时国内域名不进本地代理，减轻国内变慢。"""
+    """系统代理绕过：绕过大陆时国内站不进 7890（解决抖音/爱奇艺等变慢或打不开）。"""
     base = [
         "localhost", "127.*", "10.*", "192.168.*",
         "172.16.*", "172.17.*", "172.18.*", "172.19.*", "172.2*", "172.3*",
         "<local>",
     ]
-    if route_mode == "bypass_cn":
-        extra = [
-            "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
-            "*.baidu.com", "*.bdstatic.com", "*.qq.com", "*.gtimg.com", "*.tencent.com",
-            "*.aliyun.com", "*.alicdn.com", "*.taobao.com", "*.tmall.com", "*.alipay.com",
-            "*.163.com", "*.126.com", "*.bilibili.com", "*.hdslb.com", "*.zhihu.com",
-            "*.jd.com", "*.360.com", "*.360.cn", "*.so.com", "*.hao123.com",
-            "*.mi.com", "*.xiaomi.com", "*.bytedance.com", "*.douyin.com", "*.byteimg.com",
-            "*.msftconnecttest.com", "*.microsoft.com", "*.windowsupdate.com", "*.live.com",
-            "*.apple.com", "*.icloud.com", "*.mzstatic.com", "*.huawei.com", "*.csdn.net",
-            "*.weixin.qq.com", "*.wechat.com", "*.douban.com",
-        ]
-        base.extend(extra)
+    if route_mode != "bypass_cn":
+        return ";".join(base)
+    # 覆盖常见国内视频/社交/购物（非 .cn 后缀也必须写）
+    extra = [
+        "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
+        # 字节 / 抖音
+        "*.douyin.com", "*.iesdouyin.com", "*.byteimg.com", "*.bytedance.com",
+        "*.douyinpic.com", "*.douyinvod.com", "*.snssdk.com", "*.toutiao.com",
+        "*.ixigua.com", "*.capcut.com",
+        # 爱奇艺 / 腾讯视频 / 优酷
+        "*.iqiyi.com", "*.iqiyipic.com", "*.qy.net", "*.ppqyw.com",
+        "*.video.qq.com", "*.v.qq.com", "*.gtimg.com", "*.tencent.com", "*.qq.com",
+        "*.youku.com", "*.ykimg.com", "*.tudou.com",
+        # 百度 / 阿里 / 网易 / 京东
+        "*.baidu.com", "*.bdstatic.com", "*.baidubce.com",
+        "*.aliyun.com", "*.alicdn.com", "*.taobao.com", "*.tmall.com", "*.alipay.com",
+        "*.163.com", "*.126.com", "*.netease.com",
+        "*.jd.com", "*.360buyimg.com",
+        # 其它常用
+        "*.bilibili.com", "*.hdslb.com", "*.zhihu.com", "*.weibo.com", "*.sina.com.cn",
+        "*.mi.com", "*.xiaomi.com", "*.huawei.com", "*.csdn.net",
+        "*.weixin.qq.com", "*.wechat.com", "*.douban.com",
+        "*.360.com", "*.360.cn", "*.so.com", "*.hao123.com",
+        "*.msftconnecttest.com", "*.microsoft.com", "*.windowsupdate.com", "*.live.com",
+        "*.apple.com", "*.icloud.com", "*.mzstatic.com",
+    ]
+    base.extend(extra)
     return ";".join(base)
 
 
@@ -1152,16 +1166,27 @@ def _xray_routing(mode: str) -> dict:
         {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
     ]
     if mode == "bypass_cn":
-        # 有 geo 数据时用官方规则；无则用域名后缀回退
-        rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
-        rules.append({"type": "field", "domain": ["geosite:cn"], "outboundTag": "direct"})
-        rules.append({
-            "type": "field",
-            "domain": [("domain:" + d) for d in CN_DOMAIN_SUFFIX if "." in d or d == "cn"],
-            "outboundTag": "direct",
-        })
-    if mode == "global":
-        pass
+        has_geoip = (BIN_DIR / "geoip.dat").exists()
+        has_site = (BIN_DIR / "geosite.dat").exists()
+        if has_geoip:
+            rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
+        if has_site:
+            rules.append({"type": "field", "domain": ["geosite:cn", "geosite:geolocation-cn"], "outboundTag": "direct"})
+        # 域名直连（不依赖 geo 文件，覆盖抖音/爱奇艺等）
+        cn_domains = []
+        for d in CN_DOMAIN_SUFFIX:
+            if d == "cn":
+                cn_domains.append("domain:cn")
+            elif "." in d:
+                cn_domains.append("domain:" + d)
+        for d in (
+            "douyin.com", "byteimg.com", "bytedance.com", "snssdk.com", "toutiao.com",
+            "iqiyi.com", "qy.net", "youku.com", "qq.com", "tencent.com", "gtimg.com",
+            "bilibili.com", "hdslb.com", "baidu.com", "bdstatic.com", "taobao.com",
+            "alicdn.com", "zhihu.com", "weibo.com", "jd.com", "163.com",
+        ):
+            cn_domains.append("domain:" + d)
+        rules.append({"type": "field", "domain": cn_domains, "outboundTag": "direct"})
     return {"domainStrategy": "IPIfNonMatch", "rules": rules}
 
 
@@ -1693,6 +1718,61 @@ def make_tray_image(status: str = "disconnected", tun: bool = False):
         d.ellipse((4, 4, size - 4, size - 4), fill=(0, 122, 255, 255))
         return img
 
+
+
+def bind_context_paste(widget):
+    """Entry/Text 右键菜单：粘贴/复制/剪切/全选。"""
+    menu = tk.Menu(widget, tearoff=0)
+
+    def paste():
+        try:
+            widget.event_generate("<<Paste>>")
+        except Exception:
+            try:
+                data = widget.clipboard_get()
+                if isinstance(widget, tk.Entry):
+                    widget.insert("insert", data)
+                else:
+                    widget.insert("insert", data)
+            except Exception:
+                pass
+
+    def copy():
+        try:
+            widget.event_generate("<<Copy>>")
+        except Exception:
+            pass
+
+    def cut():
+        try:
+            widget.event_generate("<<Cut>>")
+        except Exception:
+            pass
+
+    def select_all():
+        try:
+            if isinstance(widget, tk.Entry):
+                widget.select_range(0, "end")
+            else:
+                widget.tag_add("sel", "1.0", "end")
+        except Exception:
+            pass
+
+    menu.add_command(label="粘贴", command=paste)
+    menu.add_command(label="复制", command=copy)
+    menu.add_command(label="剪切", command=cut)
+    menu.add_separator()
+    menu.add_command(label="全选", command=select_all)
+
+    def show(e):
+        try:
+            menu.tk_popup(e.x_root, e.y_root)
+        finally:
+            menu.grab_release()
+
+    widget.bind("<Button-3>", show)
+    # 部分系统右键是 Button-2
+    widget.bind("<Button-2>", show)
 
 # ===================== GUI =====================
 class NetBridgeApp(tk.Tk):
@@ -2593,6 +2673,7 @@ class NetBridgeApp(tk.Tk):
                 e = tk.Entry(d, width=40)
                 e.insert(0, default)
                 e.grid(row=i, column=1, padx=8, pady=4)
+                bind_context_paste(e)
                 fields[key] = e
 
             def ok():
@@ -2703,8 +2784,10 @@ class NetBridgeApp(tk.Tk):
         group_ent = tk.Entry(gf, width=16)
         group_ent.insert(0, "默认")
         group_ent.pack(side="left", padx=6)
+        bind_context_paste(group_ent)
         txt = scrolledtext.ScrolledText(win, height=12, font=("Consolas", 10))
         txt.pack(fill="both", expand=True, padx=12, pady=4)
+        bind_context_paste(txt)
 
         def do_import():
             content = txt.get("1.0", "end").strip()
