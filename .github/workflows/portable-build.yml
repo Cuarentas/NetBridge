@@ -65,6 +65,8 @@ jobs:
           Copy-Item core/bin/* dist/NetBridge/core/bin/ -Force
           if (Test-Path netbridge.ico) { Copy-Item netbridge.ico dist/NetBridge/netbridge.ico -Force }
           if (Test-Path netbridge.png) { Copy-Item netbridge.png dist/NetBridge/netbridge.png -Force }
+          if (Test-Path netbridge_tray.png) { Copy-Item netbridge_tray.png dist/NetBridge/netbridge_tray.png -Force }
+          if (Test-Path bg_gradient.png) { Copy-Item bg_gradient.png dist/NetBridge/bg_gradient.png -Force }
           Compress-Archive -Path dist/NetBridge/* -DestinationPath ../NetBridge-windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
         with:
