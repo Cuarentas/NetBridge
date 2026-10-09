@@ -22,6 +22,7 @@ permissions:
 env:
   SINGBOX_VER: '1.11.0'
   XRAY_VER: '25.3.6'
+  MIHOMO_VER: '1.19.32'
   FLUTTER_VERSION: '3.24.5'
 
 jobs:
@@ -48,6 +49,15 @@ jobs:
           $xr = Get-ChildItem -Recurse xr_out -Filter xray.exe | Select-Object -First 1
           if (-not $xr) { throw "xray.exe not found" }
           Copy-Item $xr.FullName desktop/core/bin/xray.exe -Force
+          try {
+            Invoke-WebRequest -Uri "https://github.com/MetaCubeX/mihomo/releases/download/v${{ env.MIHOMO_VER }}/mihomo-windows-amd64-compatible.zip" -OutFile mh.zip
+          } catch {
+            Invoke-WebRequest -Uri "https://github.com/MetaCubeX/mihomo/releases/download/v${{ env.MIHOMO_VER }}/mihomo-windows-amd64.zip" -OutFile mh.zip
+          }
+          Expand-Archive mh.zip mh_out -Force
+          $mh = Get-ChildItem -Recurse mh_out -File | Where-Object { $_.Name -like "mihomo*" -and $_.Extension -eq ".exe" } | Select-Object -First 1
+          if ($mh) { Copy-Item $mh.FullName desktop/core/bin/mihomo.exe -Force }
+
           Set-Location desktop
 
           # 将本次发版 tag 写入 APP_VERSION，与 Release / 徽章一致
