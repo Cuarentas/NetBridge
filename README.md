@@ -20,12 +20,12 @@
 
 ---
 
-## ✨ 特性（1.2.0 整合版）
+## ✨ 特性（1.3.5）
 
 | | |
 |:--|:--|
 | **精致界面** | 大圆形连接按钮、羽毛渐变底色、多皮肤 |
-| **双核心** | sing-box / Xray（发布包内置） |
+| **三核心** | sing-box / Xray / mihomo（发布包内置） |
 | **协议** | Shadowsocks · VMess · VLESS · Trojan |
 | **传输** | TCP · WebSocket · gRPC · Reality |
 | **订阅** | 一键导入，支持分组 |
@@ -45,11 +45,11 @@
 
 | 平台 | 文件 |
 |:-----|:-----|
-| Windows | `NetBridge-windows-x64.zip` → 运行 `NetBridge.exe` |
-| Linux | `NetBridge-linux-x64.tar.gz` |
-| macOS | `NetBridge-macos.zip` |
-| Android | `NetBridge-android.apk` |
-| iOS | `NetBridge-ios.zip`（需自行签名） |
+| Windows | `windows-x64.zip` → 运行 `NetBridge.exe` |
+| Linux | `linux-x64.tar.gz` |
+| macOS | `macos.zip` |
+| Android | `android.apk` |
+| iOS | `ios.zip`（需自行签名） |
 
 默认本地端口：**7890**
 
@@ -75,7 +75,7 @@
 | Release / tag | Actions 填写的 `tag_name` |
 | 软件标题 | 构建时写入 `APP_VERSION` |
 
-发版只需在 Actions 填 tag（如 `v1.2.0`）。
+发版只需在 Actions 填 tag（如 `v1.3.5`）。
 
 ---
 
@@ -92,7 +92,7 @@ Copyright (c) 2026 NetBridge Authors. All Rights Reserved.
 ## 🛠 维护者构建
 
 **Actions → Build Portable → Run workflow**  
-`tag_name` = `v1.2.0`，`create_release` = true
+`tag_name` = `v1.3.5`，`create_release` = true
 
 详见 [`docs/GITHUB_WEB_PUBLISH.md`](docs/GITHUB_WEB_PUBLISH.md)
 
