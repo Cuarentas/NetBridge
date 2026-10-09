@@ -20,8 +20,8 @@ permissions:
   contents: write
 
 env:
-  SINGBOX_VER: '1.11.0'
-  XRAY_VER: '25.3.6'
+  SINGBOX_VER: '1.14.3'
+  XRAY_VER: '26.3.27'
   MIHOMO_VER: '1.19.32'
   FLUTTER_VERSION: '3.24.5'
 
@@ -69,6 +69,15 @@ jobs:
           if (-not $mh) { throw "mihomo.exe not found in archive" }
           Copy-Item $mh.FullName desktop/core/bin/mihomo.exe -Force
 
+          # 预置 GeoFiles 到 core/bin
+          Invoke-WebRequest -Uri "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -OutFile desktop/core/bin/geoip.dat -TimeoutSec 90
+          try {
+            Invoke-WebRequest -Uri "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -OutFile desktop/core/bin/geosite.dat -TimeoutSec 90
+          } catch {
+            Invoke-WebRequest -Uri "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat" -OutFile desktop/core/bin/geosite.dat -TimeoutSec 90
+          }
+
+
           Set-Location desktop
 
           # 将本次发版 tag 写入 APP_VERSION，与 Release / 徽章一致
@@ -85,11 +94,30 @@ jobs:
           # 核心目录对齐 v2rayN：core/bin 下放 xray、sing-box、geo
           New-Item -ItemType Directory -Force -Path dist/NetBridge/core/bin | Out-Null
           Copy-Item core/bin/* dist/NetBridge/core/bin/ -Force
-          # 可选 geo（构建时下载，失败不阻断）
-          try {
-            Invoke-WebRequest -Uri "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" -OutFile dist/NetBridge/core/bin/geoip.dat -TimeoutSec 45
-            Invoke-WebRequest -Uri "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat" -OutFile dist/NetBridge/core/bin/geosite.dat -TimeoutSec 45
-          } catch { Write-Host "geo download skipped: $_" }
+          # GeoFiles 必须内置
+          $geoOk = $false
+          foreach ($pair in @(
+            @{u="https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"; o="geoip.dat"},
+            @{u="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat"; o="geoip.dat"}
+          )) {
+            try {
+              Invoke-WebRequest -Uri $pair.u -OutFile "dist/NetBridge/core/bin/$($pair.o)" -TimeoutSec 90
+              if ((Get-Item "dist/NetBridge/core/bin/$($pair.o)").Length -gt 10000) { $geoOk = $true; break }
+            } catch { Write-Host "geoip try fail: $_" }
+          }
+          if (-not $geoOk) { throw "geoip.dat download failed" }
+          $siteOk = $false
+          foreach ($u in @(
+            "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat",
+            "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat"
+          )) {
+            try {
+              Invoke-WebRequest -Uri $u -OutFile dist/NetBridge/core/bin/geosite.dat -TimeoutSec 90
+              if ((Get-Item dist/NetBridge/core/bin/geosite.dat).Length -gt 10000) { $siteOk = $true; break }
+            } catch { Write-Host "geosite try fail: $_" }
+          }
+          if (-not $siteOk) { throw "geosite.dat download failed" }
+          Get-ChildItem dist/NetBridge/core/bin | Format-Table Name, Length
           # 资源进 assets，避免解压根目录一堆同图标
           New-Item -ItemType Directory -Force -Path dist/NetBridge/assets | Out-Null
           foreach ($f in @("netbridge.ico","netbridge.png","netbridge_tray.png","bg_gradient.png")) {
