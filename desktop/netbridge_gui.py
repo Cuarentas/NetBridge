@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -2290,7 +2290,13 @@ class NetBridgeApp(tk.Tk):
                 "network": "tcp",
             }]
 
+        # 启动时清理残留系统代理，避免未连接时国内外全挂
+        try:
+            SYS_PROXY.enable(int(self.settings.get("mixed_port") or MIXED_PORT), enable=False)
+        except Exception:
+            pass
         self._build_ui()
+        self._apply_fonts()
         self._refresh()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._tray = None
@@ -2472,7 +2478,13 @@ class NetBridgeApp(tk.Tk):
             pass
         try:
             if hasattr(self, "canvas"):
-                self.canvas.configure(bg=card_bg)
+                try:
+                    root_bg = self.cget("bg")
+                    self.canvas.configure(bg=root_bg, highlightthickness=0)
+                    if hasattr(self, "_mid_frame"):
+                        self._mid_frame.configure(bg=root_bg)
+                except Exception:
+                    self.canvas.configure(bg=card_bg)
         except Exception:
             pass
 
@@ -2830,7 +2842,7 @@ class NetBridgeApp(tk.Tk):
         tk.Label(opt3, text="字号", bg=BG, fg=SECONDARY).pack(side="left", padx=(8, 2))
         font_box = ttk.Combobox(opt3, textvariable=self.font_size_var, values=[9, 10, 11, 12, 14, 16], width=4, state="readonly")
         font_box.pack(side="left")
-        font_box.bind("<<ComboboxSelected>>", lambda e: (self._persist_settings(), self._refresh()))
+        font_box.bind("<<ComboboxSelected>>", lambda e: (self._persist_settings(), self._apply_fonts(), self._refresh()))
         tk.Label(opt3, text="分组", bg=BG, fg=SECONDARY).pack(side="left", padx=(8, 2))
         self.group_box = ttk.Combobox(opt3, textvariable=self.group_var, values=self._node_groups(), width=8, state="readonly")
         self.group_box.pack(side="left")
@@ -2847,18 +2859,20 @@ class NetBridgeApp(tk.Tk):
         for w in (top, self.lbl_node, self.lbl_sub):
             w.bind("<Button-1>", lambda e: self._open_nodes())
 
-        # connect button
-        mid = tk.Frame(self, bg=BG)
+        # connect button（无方框底，仅圆形按钮）
+        mid = tk.Frame(self, bg=BG, highlightthickness=0, bd=0)
         mid.pack(expand=True, fill="both")
-        self.canvas = tk.Canvas(mid, width=180, height=180, bg=BG, highlightthickness=0)
+        self._mid_frame = mid
+        self.canvas = tk.Canvas(
+            mid, width=180, height=180, bg=BG,
+            highlightthickness=0, bd=0, highlightbackground=BG,
+        )
         self.canvas.pack(expand=True)
         self.btn_id = self.canvas.create_oval(10, 10, 170, 170, fill=BLUE, outline="")
         self.txt_id = self.canvas.create_text(90, 90, text="连接", fill="white", font=("Segoe UI", 18, "bold"))
         self.canvas.bind("<Button-1>", lambda e: self._toggle())
-        self.btn_disconnect = self._glass_btn(
-            self, "断开连接", self._disconnect, primary=False, padx=18, pady=6
-        )
-        self.btn_disconnect.pack(pady=(4, 0))
+        # 中部「断开连接」与底部导航重复，已隐藏
+        self.btn_disconnect = None
 
 
         self.lbl_proxy = tk.Label(
@@ -2884,6 +2898,28 @@ class NetBridgeApp(tk.Tk):
 
         self.lbl_status = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=SECONDARY, wraplength=400)
         self.lbl_status.pack(pady=(0, 10))
+
+
+    def _apply_fonts(self):
+        """字号选择立即作用于主要标签与列表。"""
+        try:
+            base = int(self.font_size_var.get())
+        except Exception:
+            base = 10
+        base = max(8, min(18, base))
+        try:
+            if hasattr(self, "lbl_node"):
+                self.lbl_node.configure(font=("Segoe UI", base + 2, "bold"))
+            if hasattr(self, "lbl_sub"):
+                self.lbl_sub.configure(font=("Segoe UI", base))
+            if hasattr(self, "lbl_proxy"):
+                self.lbl_proxy.configure(font=("Segoe UI", max(8, base - 1)))
+            if hasattr(self, "lbl_status"):
+                self.lbl_status.configure(font=("Segoe UI", max(8, base - 1)))
+            if hasattr(self, "canvas") and hasattr(self, "txt_id"):
+                self.canvas.itemconfig(self.txt_id, font=("Segoe UI", base + 6, "bold"))
+        except Exception:
+            pass
 
     def _refresh(self):
         n = self.current_node()
@@ -3180,19 +3216,14 @@ class NetBridgeApp(tk.Tk):
 
         def work():
             batch_test_nodes(self.nodes, workers=20)
+            # 排序但不自动切换当前选中节点
+            cur_id = id(self.current_node()) if self.nodes else None
             sort_nodes_by_latency(self.nodes)
-            # 自动选中延迟最低的可用节点（排序后一般为 index 0）
-            best_i = None
-            best_ms = 10**9
-            for i, n in enumerate(self.nodes):
-                ms = n.get("latency_ms")
-                if isinstance(ms, int) and 0 < ms < best_ms:
-                    best_ms = ms
-                    best_i = i
-            if best_i is not None:
-                self.current_index = best_i
-            else:
-                self.current_index = 0
+            if cur_id is not None:
+                for i, n in enumerate(self.nodes):
+                    if id(n) == cur_id:
+                        self.current_index = i
+                        break
             msg_spd = ""
             if self.status == "connected":
                 port = int(self.settings.get("mixed_port") or MIXED_PORT)
@@ -3213,7 +3244,7 @@ class NetBridgeApp(tk.Tk):
                     f"节点总数: {len(valid)}\n"
                     f"TCP 可用: {ok_n}\n"
                     f"超时: {fail_n}\n"
-                    + (f"已自动选择最低延迟节点: {best_ms}ms\n" if best_i is not None else "")
+                    + "（未自动切换节点）\n"
                     + (f"当前节点测速: {self.current_node().get('speed_msg', '')}" if msg_spd else "\n测速需先连接成功后再点「测试」"),
                 )
             self.after(0, done)
