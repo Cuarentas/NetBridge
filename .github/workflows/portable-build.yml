@@ -158,11 +158,11 @@ jobs:
             "Default port: 7890"
           ) -join "`r`n"
           # README removed
-          Compress-Archive -Path dist/NetBridge/* -DestinationPath ../NetBridge-windows-x64.zip -Force
+          Compress-Archive -Path dist/NetBridge/* -DestinationPath ../windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
         with:
           name: windows-x64
-          path: NetBridge-windows-x64.zip
+          path: windows-x64.zip
 
   linux-desktop:
     runs-on: ubuntu-latest
@@ -195,12 +195,12 @@ jobs:
           SRC=$(find build_app/build/linux -type d -path '*/release/bundle' | head -1)
           test -n "$SRC"
           cp -a core_bundle "$SRC/core"
-          tar -czvf NetBridge-linux-x64.tar.gz -C "$SRC" .
+          tar -czvf linux-x64.tar.gz -C "$SRC" .
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: linux-x64
-          path: NetBridge-linux-x64.tar.gz
+          path: linux-x64.tar.gz
 
   macos-desktop:
     # 与其它 job 并行；macos-14 队列有时比 macos-latest 更短
@@ -257,14 +257,14 @@ jobs:
           mkdir -p macos_out
           cp -a "$APP" macos_out/
           cp -a core_bundle macos_out/core
-          (cd macos_out && zip -r ../NetBridge-macos.zip .)
-          ls -lh NetBridge-macos.zip
+          (cd macos_out && zip -r ../macos.zip .)
+          ls -lh macos.zip
 
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: macos
-          path: NetBridge-macos.zip
+          path: macos.zip
 
   android-apk:
     runs-on: ubuntu-latest
@@ -330,14 +330,14 @@ jobs:
           fi
 
           (cd build_app && flutter pub get && flutter build apk --release)
-          cp build_app/build/app/outputs/flutter-apk/app-release.apk NetBridge-android.apk
-          ls -lh NetBridge-android.apk
+          cp build_app/build/app/outputs/flutter-apk/app-release.apk android.apk
+          ls -lh android.apk
 
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: android-apk
-          path: NetBridge-android.apk
+          path: android.apk
 
   ios-unsigned:
     runs-on: macos-14
@@ -368,14 +368,14 @@ jobs:
           rm -rf Payload
           mkdir -p Payload
           cp -a "$APP" Payload/
-          zip -r NetBridge-ios.ipa Payload
-          zip -j NetBridge-ios.zip NetBridge-ios.ipa IOS_VPN_README.txt
+          zip -r ios.ipa Payload
+          zip -j ios.zip ios.ipa IOS_VPN_README.txt
 
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: ios
-          path: NetBridge-ios.zip
+          path: ios.zip
 
   # 五个平台并行构建完成后统一发版（任一非 Windows 失败不阻断，见 continue-on-error）
   release:
@@ -430,11 +430,11 @@ jobs:
 
             | Platform | File |
             |----------|------|
-            | Windows | NetBridge-windows-x64.zip |
-            | Linux | NetBridge-linux-x64.tar.gz |
-            | macOS | NetBridge-macos.zip |
-            | Android | NetBridge-android.apk |
-            | iOS | NetBridge-ios.zip |
+            | Windows | windows-x64.zip |
+            | Linux | linux-x64.tar.gz |
+            | macOS | macos.zip |
+            | Android | android.apk |
+            | iOS | ios.zip |
           files: release_files/*
           fail_on_unmatched_files: false
         env:
