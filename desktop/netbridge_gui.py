@@ -454,17 +454,17 @@ def download_mihomo(log=None) -> Path:
         return pth
     os_name, arch = _plat()
     # MetaCubeX/mihomo release asset names
+    ver = MIHOMO_VER
     if os_name == "windows":
-        asset = "mihomo-windows-amd64-compatible.zip" if arch == "amd64" else "mihomo-windows-arm64.zip"
+        assets = [
+            f"mihomo-windows-amd64-compatible-v{ver}.zip",
+            f"mihomo-windows-amd64-v{ver}.zip",
+        ] if arch == "amd64" else [f"mihomo-windows-arm64-v{ver}.zip"]
     elif os_name == "darwin":
-        asset = "mihomo-darwin-arm64.zip" if arch == "arm64" else "mihomo-darwin-amd64.zip"
+        assets = [f"mihomo-darwin-arm64-v{ver}.zip"] if arch == "arm64" else [f"mihomo-darwin-amd64-v{ver}.zip"]
     else:
-        asset = "mihomo-linux-amd64.zip" if arch == "amd64" else "mihomo-linux-arm64.zip"
-    url = f"https://github.com/MetaCubeX/mihomo/releases/download/v{MIHOMO_VER}/{asset}"
-    # fallback asset without -compatible
-    urls = [url]
-    if "compatible" in asset:
-        urls.append(url.replace("-compatible", ""))
+        assets = [f"mihomo-linux-amd64-v{ver}.zip"] if arch == "amd64" else [f"mihomo-linux-arm64-v{ver}.zip"]
+    urls = [f"https://github.com/MetaCubeX/mihomo/releases/download/v{ver}/{a}" for a in assets]
     if log:
         log("下载 mihomo ...")
     tmp = Path(tempfile.mkdtemp())
