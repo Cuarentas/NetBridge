@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1378,7 +1378,6 @@ def _xray_stream(node: dict) -> dict:
         host = (node.get("host") or node.get("sni") or "").strip()
         if host:
             ws["host"] = host
-            ws["headers"] = {"Host": host}
         stream["wsSettings"] = ws
     elif net == "grpc":
         stream["network"] = "grpc"
@@ -1516,6 +1515,12 @@ def build_xray_config(node: dict, settings: dict) -> dict:
     # v2rayN fragment：经 freedom 分片拨号，解决 CF 节点 TLS 超时
     outbounds = [outbound]
     frag = node.get("fragment")
+    if not isinstance(frag, dict):
+        # 机场 CF / ed= 节点默认开启 tlshello 分片
+        path = str(node.get("path") or "")
+        host = str(node.get("host") or node.get("sni") or "")
+        if "ed=" in path or "cloudflare" in host or "dpdns" in host or "pages.dev" in host:
+            frag = {"packets": "tlshello", "length": "40-60", "interval": "30-50"}
     if isinstance(frag, dict) and frag.get("packets"):
         stream = outbound.setdefault("streamSettings", {})
         sockopt = stream.setdefault("sockopt", {})
@@ -2480,9 +2485,16 @@ class NetBridgeApp(tk.Tk):
             if hasattr(self, "canvas"):
                 try:
                     root_bg = self.cget("bg")
-                    self.canvas.configure(bg=root_bg, highlightthickness=0)
+                    self.canvas.configure(bg=root_bg, highlightthickness=0, highlightbackground=root_bg)
                     if hasattr(self, "_mid_frame"):
                         self._mid_frame.configure(bg=root_bg)
+                    if hasattr(self, "_bottom_bar"):
+                        self._bottom_bar.configure(bg=root_bg)
+                        for ch in self._bottom_bar.winfo_children():
+                            try:
+                                ch.configure(bg=root_bg)
+                            except Exception:
+                                pass
                 except Exception:
                     self.canvas.configure(bg=card_bg)
         except Exception:
@@ -2539,6 +2551,38 @@ class NetBridgeApp(tk.Tk):
             highlightcolor=sk["accent"],
         )
         return btn
+
+    def _circle_nav_btn(self, parent, text, command, size=52):
+        """底部圆形导航按钮，背景与父容器一致。"""
+        sk = self._skin()
+        try:
+            pbg = parent.cget("bg")
+        except Exception:
+            pbg = sk.get("bg", BG)
+        cv = tk.Canvas(parent, width=size, height=size, bg=pbg, highlightthickness=0, bd=0)
+        pad = 2
+        oid = cv.create_oval(pad, pad, size - pad, size - pad, fill=sk["card"], outline=sk.get("accent", "#D0D5DD"), width=1)
+        tid = cv.create_text(size // 2, size // 2, text=text, fill=sk["text"], font=("Segoe UI", self._fs(8), "bold"))
+
+        def on_enter(_):
+            cv.itemconfig(oid, fill=sk["accent"])
+            cv.itemconfig(tid, fill="#FFFFFF")
+
+        def on_leave(_):
+            cv.itemconfig(oid, fill=sk["card"])
+            cv.itemconfig(tid, fill=sk["text"])
+
+        def on_click(_):
+            try:
+                command()
+            except Exception:
+                pass
+
+        cv.bind("<Enter>", on_enter)
+        cv.bind("<Leave>", on_leave)
+        cv.bind("<Button-1>", on_click)
+        cv._circle_ids = (oid, tid)
+        return cv
 
     def _err(self, title, msg):
         alert_error()
@@ -2859,17 +2903,17 @@ class NetBridgeApp(tk.Tk):
         for w in (top, self.lbl_node, self.lbl_sub):
             w.bind("<Button-1>", lambda e: self._open_nodes())
 
-        # connect button（无方框底，仅圆形按钮）
+        # connect button：仅圆形，画布与窗口同色
         mid = tk.Frame(self, bg=BG, highlightthickness=0, bd=0)
         mid.pack(expand=True, fill="both")
         self._mid_frame = mid
         self.canvas = tk.Canvas(
-            mid, width=180, height=180, bg=BG,
-            highlightthickness=0, bd=0, highlightbackground=BG,
+            mid, width=168, height=168, bg=BG,
+            highlightthickness=0, bd=0, highlightbackground=BG, highlightcolor=BG,
         )
         self.canvas.pack(expand=True)
-        self.btn_id = self.canvas.create_oval(10, 10, 170, 170, fill=BLUE, outline="")
-        self.txt_id = self.canvas.create_text(90, 90, text="连接", fill="white", font=("Segoe UI", 18, "bold"))
+        self.btn_id = self.canvas.create_oval(4, 4, 164, 164, fill=BLUE, outline="")
+        self.txt_id = self.canvas.create_text(84, 84, text="连接", fill="white", font=("Segoe UI", 18, "bold"))
         self.canvas.bind("<Button-1>", lambda e: self._toggle())
         # 中部「断开连接」与底部导航重复，已隐藏
         self.btn_disconnect = None
@@ -2881,9 +2925,10 @@ class NetBridgeApp(tk.Tk):
         )
         self.lbl_proxy.pack()
 
-        # bottom nav
-        bottom = tk.Frame(self, bg=CARD)
-        bottom.pack(fill="x", padx=16, pady=(10, 8))
+        # bottom nav：圆形按钮，底色与窗口一致
+        bottom = tk.Frame(self, bg=BG, highlightthickness=0, bd=0)
+        bottom.pack(fill="x", padx=12, pady=(8, 8))
+        self._bottom_bar = bottom
         for text, cmd in [
             ("节点", self._open_nodes),
             ("订阅", self._manage_subs_dialog),
@@ -2893,8 +2938,8 @@ class NetBridgeApp(tk.Tk):
             ("托盘", self._hide_to_tray),
             ("日志", self._show_log),
         ]:
-            b = self._glass_btn(bottom, text, cmd, primary=False, padx=6, pady=10)
-            b.pack(side="left", expand=True, padx=2, pady=4)
+            b = self._circle_nav_btn(bottom, text, cmd, size=54)
+            b.pack(side="left", expand=True, padx=3, pady=6)
 
         self.lbl_status = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=SECONDARY, wraplength=400)
         self.lbl_status.pack(pady=(0, 10))
@@ -3216,14 +3261,17 @@ class NetBridgeApp(tk.Tk):
 
         def work():
             batch_test_nodes(self.nodes, workers=20)
-            # 排序但不自动切换当前选中节点
-            cur_id = id(self.current_node()) if self.nodes else None
             sort_nodes_by_latency(self.nodes)
-            if cur_id is not None:
-                for i, n in enumerate(self.nodes):
-                    if id(n) == cur_id:
-                        self.current_index = i
-                        break
+            # 自动选择延迟最低的可用节点
+            best_i = None
+            best_ms = 10**9
+            for i, n in enumerate(self.nodes):
+                ms = n.get("latency_ms")
+                if isinstance(ms, int) and 0 < ms < best_ms:
+                    best_ms = ms
+                    best_i = i
+            if best_i is not None:
+                self.current_index = best_i
             msg_spd = ""
             if self.status == "connected":
                 port = int(self.settings.get("mixed_port") or MIXED_PORT)
@@ -3244,7 +3292,7 @@ class NetBridgeApp(tk.Tk):
                     f"节点总数: {len(valid)}\n"
                     f"TCP 可用: {ok_n}\n"
                     f"超时: {fail_n}\n"
-                    + "（未自动切换节点）\n"
+                    + "已自动选择最低延迟节点\n"
                     + (f"当前节点测速: {self.current_node().get('speed_msg', '')}" if msg_spd else "\n测速需先连接成功后再点「测试」"),
                 )
             self.after(0, done)
