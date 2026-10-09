@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -295,16 +295,47 @@ def no_window_kwargs():
 
 
 # ===================== core download =====================
+def _find_bin(names: list[str]) -> Path:
+    """在 core/bin 中查找核心（兼容 .exe / 无后缀 / 子目录）。"""
+    ensure_dirs()
+    candidates = []
+    for name in names:
+        candidates.append(BIN_DIR / name)
+        if is_windows() and not name.endswith(".exe"):
+            candidates.append(BIN_DIR / (name + ".exe"))
+        if is_windows() and name.endswith(".exe"):
+            candidates.append(BIN_DIR / name[:-4])
+    # 子目录（对齐 v2rayN 风格）
+    for sub in ("xray", "sing_box", "sing-box", "mihomo", "v2fly"):
+        d = BIN_DIR / sub
+        if d.is_dir():
+            for name in names:
+                candidates.append(d / name)
+                if is_windows() and not name.endswith(".exe"):
+                    candidates.append(d / (name + ".exe"))
+    for c in candidates:
+        try:
+            if c.is_file() and c.stat().st_size > 1000:
+                return c
+        except Exception:
+            pass
+    # 默认返回首选路径（供下载写入）
+    preferred = names[0]
+    if is_windows() and not preferred.endswith(".exe"):
+        preferred = preferred + ".exe"
+    return BIN_DIR / preferred
+
+
 def singbox_path() -> Path:
-    return BIN_DIR / ("sing-box.exe" if is_windows() else "sing-box")
+    return _find_bin(["sing-box.exe", "sing-box"])
 
 
 def xray_path() -> Path:
-    return BIN_DIR / ("xray.exe" if is_windows() else "xray")
+    return _find_bin(["xray.exe", "xray"])
 
 
 def mihomo_path() -> Path:
-    return BIN_DIR / ("mihomo.exe" if is_windows() else "mihomo")
+    return _find_bin(["mihomo.exe", "mihomo", "clash.exe", "clash"])
 
 
 def core_local_version(name: str) -> str:
@@ -318,8 +349,13 @@ def core_local_version(name: str) -> str:
             binp = singbox_path()
         if not binp.is_file():
             return "未安装"
+        args = [str(binp)]
+        if name == "mihomo":
+            args.append("-v")
+        else:
+            args.append("version")
         r = subprocess.run(
-            [str(binp), "version"] if name != "xray" else [str(binp), "version"],
+            args,
             capture_output=True, text=True, timeout=5, **no_window_kwargs(),
         )
         out = (r.stdout or "") + (r.stderr or "")
@@ -970,11 +1006,25 @@ def fetch_subscription(url: str, timeout: int = 25) -> list[dict]:
         text = raw.decode("utf-8")
     except Exception:
         text = raw.decode("utf-8", errors="ignore")
+    try:
+        ensure_dirs()
+        (RUNTIME / "last_sub_raw.txt").write_bytes(raw[:200000])
+    except Exception:
+        pass
     nodes = parse_subscription_content(text)
     if not nodes:
         nodes = parse_subscription_content("".join(text.split()))
     if not nodes:
-        raise RuntimeError("订阅内容已下载但未解析到节点（请确认链接在浏览器可打开）")
+        # 部分订阅整段是 base64 但带换行/空白
+        try:
+            decoded = _b64decode("".join(text.split()))
+            nodes = parse_subscription_content(decoded)
+        except Exception:
+            pass
+    if not nodes:
+        raise RuntimeError(
+            "订阅内容已下载但未解析到节点（请确认链接在浏览器可打开）。\n调试文件: runtime/last_sub_raw.txt"
+        )
     return nodes
 
 
@@ -1230,12 +1280,32 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
         "log": {"level": log_level, "timestamp": True},
         "dns": {
             "servers": [
-                {"tag": "local", "address": "local", "detour": "direct"},
-                {"tag": "google", "address": "8.8.8.8", "detour": "proxy"},
-                {"tag": "cf", "address": "1.1.1.1", "detour": "proxy"},
+                {
+                    "type": "local",
+                    "tag": "local",
+                    "detour": "direct",
+                },
+                {
+                    "type": "udp",
+                    "tag": "google",
+                    "server": "8.8.8.8",
+                    "detour": "proxy",
+                },
+                {
+                    "type": "udp",
+                    "tag": "cf",
+                    "server": "1.1.1.1",
+                    "detour": "proxy",
+                },
             ],
             "rules": [
-                {"domain_suffix": ["google.com", "googleapis.com", "gstatic.com", "youtube.com", "googlevideo.com", "cloudflare.com", "ytimg.com"], "server": "google"},
+                {
+                    "domain_suffix": [
+                        "google.com", "googleapis.com", "gstatic.com",
+                        "youtube.com", "googlevideo.com", "cloudflare.com", "ytimg.com",
+                    ],
+                    "server": "google",
+                },
             ],
             "final": "local",
             "strategy": "prefer_ipv4",
@@ -1327,12 +1397,11 @@ def _xray_stream(node: dict) -> dict:
         allow = node.get("allow_insecure")
         if allow is None:
             allow = True
+        # Xray 26+ 已移除 allowInsecure，改为仅依赖正确 SNI + fingerprint
         tls: dict = {
             "serverName": node.get("sni") or node.get("host") or node.get("server") or "",
-            "allowInsecure": bool(allow),
             "fingerprint": node.get("fp") or "chrome",
         }
-        # 不强制 ALPN http/1.1，减少 Xray 25 弃用警告；由核心自行协商
         if node.get("alpn"):
             tls["alpn"] = [a.strip() for a in str(node["alpn"]).split(",") if a.strip()]
         stream["tlsSettings"] = tls
@@ -1969,7 +2038,7 @@ def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 3.0) -> tup
     import urllib.request
 
     # 1) 端口探测；失败时若日志已 started 则继续（避免 Windows 误报）
-    port_ok = wait_port_open("127.0.0.1", port, tries=6, delay=0.15)
+    port_ok = wait_port_open("127.0.0.1", port, tries=20, delay=0.25)
     if not port_ok and not log_says_core_started():
         return False, f"本地端口 127.0.0.1:{port} 未在监听（核心可能已退出，请看日志）"
 
