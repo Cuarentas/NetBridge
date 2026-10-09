@@ -94,6 +94,23 @@ jobs:
           # 核心目录对齐 v2rayN：core/bin 下放 xray、sing-box、geo
           New-Item -ItemType Directory -Force -Path dist/NetBridge/core/bin | Out-Null
           Copy-Item core/bin/* dist/NetBridge/core/bin/ -Force
+          # 统一 Windows 可执行后缀，避免「mihomo 未安装」
+          Get-ChildItem dist/NetBridge/core/bin -File | ForEach-Object {
+            $n = $_.Name.ToLower()
+            if ($n -eq "xray") { Rename-Item $_.FullName "xray.exe" -Force }
+            if ($n -eq "mihomo") { Rename-Item $_.FullName "mihomo.exe" -Force }
+            if ($n -eq "sing-box") { Rename-Item $_.FullName "sing-box.exe" -Force }
+            if ($n -eq "clash") { Rename-Item $_.FullName "mihomo.exe" -Force }
+          }
+          $must = @("xray.exe","sing-box.exe","mihomo.exe","geoip.dat","geosite.dat")
+          foreach ($m in $must) {
+            if (-not (Test-Path "dist/NetBridge/core/bin/$m")) { throw "missing $m in core/bin" }
+          }
+          Get-ChildItem dist/NetBridge/core/bin | Format-Table Name, Length
+          if (Test-Path dist/NetBridge/README.txt) { Remove-Item dist/NetBridge/README.txt -Force }
+          if (Test-Path dist/NetBridge/README.md) { Remove-Item dist/NetBridge/README.md -Force }
+
+
           # GeoFiles 必须内置
           $geoOk = $false
           foreach ($pair in @(
@@ -118,6 +135,9 @@ jobs:
           }
           if (-not $siteOk) { throw "geosite.dat download failed" }
           Get-ChildItem dist/NetBridge/core/bin | Format-Table Name, Length
+          if (Test-Path dist/NetBridge/README.txt) { Remove-Item dist/NetBridge/README.txt -Force }
+          if (Test-Path dist/NetBridge/README.md) { Remove-Item dist/NetBridge/README.md -Force }
+
           # 资源进 assets，避免解压根目录一堆同图标
           New-Item -ItemType Directory -Force -Path dist/NetBridge/assets | Out-Null
           foreach ($f in @("netbridge.ico","netbridge.png","netbridge_tray.png","bg_gradient.png")) {
@@ -137,7 +157,7 @@ jobs:
             "_internal = runtime libs (do not delete)"
             "Default port: 7890"
           ) -join "`r`n"
-          Set-Content -Path "dist/NetBridge/README.txt" -Value $readme -Encoding UTF8
+          # README removed
           Compress-Archive -Path dist/NetBridge/* -DestinationPath ../NetBridge-windows-x64.zip -Force
       - uses: actions/upload-artifact@v4
         with:
