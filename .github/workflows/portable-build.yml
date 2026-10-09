@@ -49,14 +49,25 @@ jobs:
           $xr = Get-ChildItem -Recurse xr_out -Filter xray.exe | Select-Object -First 1
           if (-not $xr) { throw "xray.exe not found" }
           Copy-Item $xr.FullName desktop/core/bin/xray.exe -Force
-          try {
-            Invoke-WebRequest -Uri "https://github.com/MetaCubeX/mihomo/releases/download/v${{ env.MIHOMO_VER }}/mihomo-windows-amd64-compatible.zip" -OutFile mh.zip
-          } catch {
-            Invoke-WebRequest -Uri "https://github.com/MetaCubeX/mihomo/releases/download/v${{ env.MIHOMO_VER }}/mihomo-windows-amd64.zip" -OutFile mh.zip
+          $mhVer = "${{ env.MIHOMO_VER }}"
+          $mhUrls = @(
+            "https://github.com/MetaCubeX/mihomo/releases/download/v$mhVer/mihomo-windows-amd64-compatible-v$mhVer.zip",
+            "https://github.com/MetaCubeX/mihomo/releases/download/v$mhVer/mihomo-windows-amd64-v$mhVer.zip"
+          )
+          $mhOk = $false
+          foreach ($u in $mhUrls) {
+            try {
+              Write-Host "Downloading $u"
+              Invoke-WebRequest -Uri $u -OutFile mh.zip
+              $mhOk = $true
+              break
+            } catch { Write-Host "fail $u : $_" }
           }
+          if (-not $mhOk) { throw "mihomo download failed" }
           Expand-Archive mh.zip mh_out -Force
           $mh = Get-ChildItem -Recurse mh_out -File | Where-Object { $_.Name -like "mihomo*" -and $_.Extension -eq ".exe" } | Select-Object -First 1
-          if ($mh) { Copy-Item $mh.FullName desktop/core/bin/mihomo.exe -Force }
+          if (-not $mh) { throw "mihomo.exe not found in archive" }
+          Copy-Item $mh.FullName desktop/core/bin/mihomo.exe -Force
 
           Set-Location desktop
 
