@@ -62,11 +62,11 @@ PID_FILE = RUNTIME / "core.pid"
 LOG_FILE = RUNTIME / "core.log"
 CONFIG_FILE = RUNTIME / "config.json"
 
-SINGBOX_VER = "1.11.0"
+SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
-XRAY_VER = "25.3.6"
+XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -828,31 +828,35 @@ def parse_share_link(line: str) -> dict | None:
 
 def parse_subscription_content(text: str) -> list[dict]:
     """Parse base64 subscription, plain share links, or simple clash-like proxies list."""
-    text = text.strip()
+    text = (text or "").strip()
+    if not text:
+        return []
     nodes: list[dict] = []
 
-    # try whole-text base64
-    if "://" not in text[:80]:
+    def collect(src: str) -> list[dict]:
+        out = []
+        for line in src.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            n = parse_share_link(line)
+            if n:
+                out.append(n)
+        return out
+
+    nodes = collect(text)
+    if not nodes:
         try:
-            decoded = _b64decode(text)
-            if "://" in decoded or "\n" in decoded:
-                text = decoded
+            compact = "".join(text.split())
+            decoded = _b64decode(compact)
+            if decoded and ("://" in decoded or "trojan" in decoded or "vmess" in decoded or "vless" in decoded):
+                nodes = collect(decoded)
+                if not nodes and ("proxies:" in decoded or "type:" in decoded):
+                    nodes = _parse_clash_proxies(decoded)
         except Exception:
             pass
-
-    # line by line share links
-    for line in text.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        n = parse_share_link(line)
-        if n:
-            nodes.append(n)
-
-    # clash yaml proxies: very light parser for type/server/port/uuid etc
     if not nodes and ("proxies:" in text or "type:" in text):
-        nodes.extend(_parse_clash_proxies(text))
-
+        nodes = _parse_clash_proxies(text)
     return nodes
 
 
@@ -927,15 +931,51 @@ def _parse_clash_proxies(text: str) -> list[dict]:
     return nodes
 
 
-def fetch_subscription(url: str, timeout: int = 20) -> list[dict]:
-    req = urllib.request.Request(url, headers={"User-Agent": f"NetBridge/{APP_VERSION}"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        raw = resp.read()
+def fetch_subscription(url: str, timeout: int = 25) -> list[dict]:
+    url = (url or "").strip()
+    if not url:
+        return []
+    headers = {
+        "User-Agent": f"NetBridge/{APP_VERSION} (v2rayN compatible)",
+        "Accept": "*/*",
+    }
+    errors = []
+    raw = b""
+    for mode in ("direct", "proxy"):
+        try:
+            if mode == "direct":
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            else:
+                port = MIXED_PORT
+                try:
+                    if SETTINGS_FILE.exists():
+                        port = int(json.loads(SETTINGS_FILE.read_text(encoding="utf-8")).get("mixed_port") or MIXED_PORT)
+                except Exception:
+                    pass
+                proxy = f"http://127.0.0.1:{port}"
+                opener = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+                )
+            req = urllib.request.Request(url, headers=headers)
+            with opener.open(req, timeout=timeout) as resp:
+                raw = resp.read()
+            if raw:
+                break
+        except Exception as e:
+            errors.append(f"{mode}:{e}")
+            raw = b""
+    if not raw:
+        raise RuntimeError("订阅下载失败: " + "; ".join(errors[-3:]))
     try:
         text = raw.decode("utf-8")
     except Exception:
         text = raw.decode("utf-8", errors="ignore")
-    return parse_subscription_content(text)
+    nodes = parse_subscription_content(text)
+    if not nodes:
+        nodes = parse_subscription_content("".join(text.split()))
+    if not nodes:
+        raise RuntimeError("订阅内容已下载但未解析到节点（请确认链接在浏览器可打开）")
+    return nodes
 
 
 
@@ -1444,12 +1484,19 @@ def _xray_routing(mode: str) -> dict:
             "domainStrategy": "AsIs",
             "rules": [{"type": "field", "network": "tcp,udp", "outboundTag": "direct"}],
         }
-    rules = [
-        {"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"},
+    private_ips = [
+        "0.0.0.0/8", "10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16",
+        "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4",
+        "::1/128", "fc00::/7", "fe80::/10",
     ]
+    has_geoip = (BIN_DIR / "geoip.dat").exists()
+    has_site = (BIN_DIR / "geosite.dat").exists()
+    rules = []
+    if has_geoip:
+        rules.append({"type": "field", "ip": ["geoip:private"], "outboundTag": "direct"})
+    else:
+        rules.append({"type": "field", "ip": private_ips, "outboundTag": "direct"})
     if mode == "bypass_cn":
-        has_geoip = (BIN_DIR / "geoip.dat").exists()
-        has_site = (BIN_DIR / "geosite.dat").exists()
         if has_geoip:
             rules.append({"type": "field", "ip": ["geoip:cn"], "outboundTag": "direct"})
         if has_site:
@@ -1799,7 +1846,10 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
             log_cb("TUN 目前仅 sing-box / mihomo 支持，已忽略 TUN")
         binary = download_xray(log_cb)
         try:
-            ensure_xray_geo_async(log_cb)
+            if not (BIN_DIR / "geoip.dat").exists():
+                ensure_xray_geo(log_cb, timeout=15.0)
+            else:
+                ensure_xray_geo_async(log_cb)
         except Exception:
             pass
         cfg = build_xray_config(node, settings)
@@ -2407,29 +2457,14 @@ class NetBridgeApp(tk.Tk):
         messagebox.showwarning(title, msg)
 
     def _start_connect_anim(self):
+        # 已取消连接动画
         self._stop_connect_anim()
-        self._anim_phase = 0
-
-        def tick():
-            if self.status != "connecting":
-                self._anim_job = None
-                return
-            self._anim_phase = (self._anim_phase + 1) % 6
-            sk = self._skin()
-            # pulse radius / color
-            colors = [sk["accent"], "#5AC8FA", sk["accent"], "#FFD60A", sk["accent"], "#64D2FF"]
-            c = colors[self._anim_phase]
-            try:
-                pad = 10 + (self._anim_phase % 3) * 2
-                self.canvas.coords(self.btn_id, pad, pad, 180 - pad, 180 - pad)
-                self.canvas.itemconfig(self.btn_id, fill=c)
-                dots = "." * (self._anim_phase % 4)
-                self.canvas.itemconfig(self.txt_id, text=f"连接中{dots}")
-            except Exception:
-                pass
-            self._anim_job = self.after(120, tick)
-
-        tick()
+        try:
+            self.canvas.coords(self.btn_id, 10, 10, 170, 170)
+            self.canvas.itemconfig(self.btn_id, fill=ORANGE)
+            self.canvas.itemconfig(self.txt_id, text="连接中")
+        except Exception:
+            pass
 
     def _stop_connect_anim(self):
         if self._anim_job:
