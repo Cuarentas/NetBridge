@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -684,6 +684,20 @@ def write_mihomo_yaml(cfg: dict, path: Path):
 
 
 
+def _b64decode(s: str) -> str:
+    """标准/URL-safe base64 解码为文本。"""
+    if not s:
+        return ""
+    s = str(s).strip()
+    s = "".join(s.split())
+    s = s.replace("-", "+").replace("_", "/")
+    pad = (-len(s)) % 4
+    if pad:
+        s += "=" * pad
+    raw = base64.b64decode(s)
+    return raw.decode("utf-8", errors="ignore")
+
+
 def _safe_b64_json(s: str) -> dict:
     try:
         return json.loads(_b64decode(s))
@@ -1046,14 +1060,14 @@ CN_DOMAIN_SUFFIX = [
 
 
 def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
-    """系统代理绕过：绕过大陆时国内站不进 7890（解决抖音/爱奇艺等变慢或打不开）。"""
-    base = [
-        "localhost", "127.*", "10.*", "192.168.*",
-        "172.16.*", "172.17.*", "172.18.*", "172.19.*", "172.2*", "172.3*",
-        "<local>",
-    ]
-    if route_mode != "bypass_cn":
-        return ";".join(base)
+    """系统代理绕过列表（对齐 v2rayN：仅本地/内网）。
+    国内直连交给核心路由，避免过长 ProxyOverride 与 PAC dnsResolve 拖慢网页。
+    """
+    return (
+        "localhost;127.*;10.*;192.168.*;"
+        "172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.3*;"
+        "<local>"
+    )
     # 覆盖常见国内视频/社交/购物（非 .cn 后缀也必须写）
     extra = [
         "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
@@ -1591,7 +1605,7 @@ def _xray_routing(mode: str) -> dict:
 # ===================== system proxy =====================
 
 def write_proxy_pac(port: int, route_mode: str = "bypass_cn") -> Path:
-    """生成 PAC：国内直连、国外走本地代理（比 ProxyOverride 更可靠）。"""
+    """生成 PAC：国内直连、国外走本地代理。禁止 dnsResolve（会拖慢国内访问）。"""
     ensure_dirs()
     pac = RUNTIME / "proxy.pac"
     if route_mode == "global":
@@ -1619,15 +1633,17 @@ def write_proxy_pac(port: int, route_mode: str = "bypass_cn") -> Path:
         body = (
             "function FindProxyForURL(url, host) {\n"
             "  if (isPlainHostName(host) || host === \"127.0.0.1\" || host === \"localhost\") return \"DIRECT\";\n"
-            "  if (isInNet(dnsResolve(host), \"10.0.0.0\", \"255.0.0.0\") ||\n"
-            "      isInNet(dnsResolve(host), \"192.168.0.0\", \"255.255.0.0\") ||\n"
-            "      isInNet(dnsResolve(host), \"172.16.0.0\", \"255.240.0.0\")) return \"DIRECT\";\n"
+            "  if (shExpMatch(host, \"10.*\") || shExpMatch(host, \"192.168.*\") ||\n"
+            "      shExpMatch(host, \"172.16.*\") || shExpMatch(host, \"172.17.*\") ||\n"
+            "      shExpMatch(host, \"172.18.*\") || shExpMatch(host, \"172.19.*\") ||\n"
+            "      shExpMatch(host, \"172.2*.*\") || shExpMatch(host, \"172.3*.*\")) return \"DIRECT\";\n"
             f"  if ({checks}) return \"DIRECT\";\n"
             f"  return \"PROXY 127.0.0.1:{port}; DIRECT\";\n"
             "}\n"
         )
     pac.write_text(body, encoding="utf-8")
     return pac
+
 
 
 class SystemProxy:
@@ -1677,19 +1693,14 @@ class SystemProxy:
         )
         try:
             if enable:
-                if route_mode in ("bypass_cn", "global"):
-                    pac = write_proxy_pac(port, route_mode)
-                    pac_url = "file:///" + str(pac.resolve()).replace("\\", "/")
-                    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                    winreg.SetValueEx(key, "AutoConfigURL", 0, winreg.REG_SZ, pac_url)
-                    winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
-                    winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
-                else:
-                    winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-                    try:
-                        winreg.DeleteValue(key, "AutoConfigURL")
-                    except Exception:
-                        pass
+                # 对齐 v2rayN：仅 ProxyServer + 短 ProxyOverride，分流由核心完成
+                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
+                winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
+                try:
+                    winreg.DeleteValue(key, "AutoConfigURL")
+                except Exception:
+                    pass
             else:
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
                 try:
