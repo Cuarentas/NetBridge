@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1633,7 +1633,7 @@ def build_xray_config(node: dict, settings: dict) -> dict:
 def _xray_routing(mode: str) -> dict:
     if mode == "direct":
         return {
-            "domainStrategy": "AsIs",
+            "domainStrategy": "IPIfNonMatch",
             "rules": [{"type": "field", "network": "tcp,udp", "outboundTag": "direct"}],
         }
     private_ips = [
@@ -1790,11 +1790,11 @@ class SystemProxy:
         # WinHTTP 较慢，放到后台，避免拖慢「连接」
         def _wh():
             try:
-                # WinHTTP 不认 ProxyOverride，绕过大陆时重置，避免国内全走代理变慢
-                if enable and route_mode == "global":
+                if enable:
+                    # 从 IE 导入，让 WinHTTP/部分应用同步系统代理
                     subprocess.run(
-                        ["netsh", "winhttp", "set", "proxy", f"{host}:{port}"],
-                        capture_output=True, timeout=3, **no_window_kwargs(),
+                        ["netsh", "winhttp", "import", "proxy", "source=ie"],
+                        capture_output=True, timeout=5, **no_window_kwargs(),
                     )
                 else:
                     subprocess.run(
@@ -2352,7 +2352,9 @@ class NetBridgeApp(tk.Tk):
         self.skin_var = tk.StringVar(value=self.settings.get("skin", "羽毛渐变"))
         self.font_size_var = tk.IntVar(value=int(self.settings.get("font_size") or 10))
         self.group_var = tk.StringVar(value=self.settings.get("group_filter", "全部"))
-        self.route_mode_var = tk.StringVar(value=self.settings.get("route_mode", "bypass_cn"))
+        _rm0 = self.settings.get("route_mode", "bypass_cn")
+        _rm_cn = {"bypass_cn": "绕过大陆", "global": "全局代理", "direct": "直连"}.get(_rm0, "绕过大陆")
+        self.route_mode_var = tk.StringVar(value=_rm_cn)
         self.upload = "0 B/s"
         self.download = "0 B/s"
         self._anim_job = None
@@ -2401,7 +2403,9 @@ class NetBridgeApp(tk.Tk):
         self.settings["skin"] = self.skin_var.get()
         self.settings["font_size"] = int(self.font_size_var.get())
         self.settings["group_filter"] = self.group_var.get()
-        self.settings["route_mode"] = self.route_mode_var.get()
+        _rmap = {"绕过大陆": "bypass_cn", "全局代理": "global", "直连": "direct",
+                   "bypass_cn": "bypass_cn", "global": "global", "direct": "direct"}
+        self.settings["route_mode"] = _rmap.get(self.route_mode_var.get(), "bypass_cn")
         save_settings(self.settings)
 
 
@@ -2946,7 +2950,7 @@ class NetBridgeApp(tk.Tk):
         route_box = ttk.Combobox(
             opt2,
             textvariable=self.route_mode_var,
-            values=["bypass_cn", "global", "direct"],
+            values=["绕过大陆", "全局代理", "直连"],
             width=10,
             state="readonly",
         )
