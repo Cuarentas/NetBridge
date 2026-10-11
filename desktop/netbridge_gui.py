@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.9"
+APP_VERSION = "1.4.0"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1222,10 +1222,8 @@ def _sb_tls(node: dict) -> dict | None:
             "short_id": node.get("sid") or "",
         }
         tls["insecure"] = False
-    ech = (node.get("ech") or "").strip()
-    if ech and not node.get("reality"):
-        # sing-box 1.12+ ECH：query 形式
-        tls["ech"] = {"enabled": True, "config": [ech] if not ech.startswith("{") else ech}
+    # 订阅里的 ech=cloudflare-ech.com+https://... 是查询串，不是 PEM，
+    # 写入 sing-box 会报 invalid ECH configs pem，故不在此配置。
     return tls
 
 
@@ -1766,12 +1764,8 @@ class SystemProxy:
             if enable:
                 # 对齐 v2rayN：仅 ProxyServer + 短 ProxyOverride，分流由核心完成
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                # 分协议格式，Edge/Chrome 更稳定
-                proxy_val = (
-                    f"http={host}:{port};https={host}:{port};"
-                    f"ftp={host}:{port};socks={host}:{port}"
-                )
-                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_val)
+                # 必须用 127.0.0.1:端口（Windows 设置会拆成 IP + 端口两栏）
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
                 winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
                 try:
                     winreg.DeleteValue(key, "AutoConfigURL")
