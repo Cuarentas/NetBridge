@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.7"
+APP_VERSION = "1.3.8"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -581,11 +581,12 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
     if node.get("tls") or node.get("reality") or net in ("ws", "grpc"):
         if proto != "ss":
             proxy["tls"] = True
-        proxy["skip-cert-verify"] = bool(node.get("allow_insecure", True))
-        if node.get("sni") or node.get("host"):
-            proxy["servername"] = node.get("sni") or node.get("host")
-        if node.get("fp"):
-            proxy["client-fingerprint"] = node.get("fp") or "chrome"
+        proxy["skip-cert-verify"] = True
+        sn = (node.get("sni") or node.get("host") or "").strip()
+        if sn:
+            proxy["servername"] = sn
+        proxy["client-fingerprint"] = (node.get("fp") or "chrome")
+        proxy["udp"] = True
         if node.get("reality"):
             proxy["reality-opts"] = {
                 "public-key": node.get("pbk") or "",
@@ -1137,21 +1138,27 @@ def normalize_node(node: dict) -> dict:
     if net in ("websocket",):
         net = "ws"
         n["network"] = "ws"
+    if proto in ("trojan", "vless") and net in ("ws", "grpc"):
+        n["tls"] = True
     if proto == "trojan":
         n["tls"] = True
         if n.get("allow_insecure") is None:
             n["allow_insecure"] = True
-    if net == "ws":
-        if not n.get("path"):
+    if net in ("ws", "grpc"):
+        if not (n.get("path") or "").strip():
             n["path"] = "/"
-        if not n.get("host") and n.get("sni"):
-            n["host"] = n["sni"]
-        if not n.get("sni") and n.get("host"):
-            n["sni"] = n["host"]
-    if not n.get("sni") and n.get("tls"):
-        n["sni"] = n.get("host") or n.get("server") or ""
-    if not n.get("fp") and (n.get("tls") or proto == "trojan"):
-        n["fp"] = "chrome"
+        # CF 节点必须有 Host/SNI，否则 TLS/WS 握手会卡住
+        if not (n.get("host") or "").strip():
+            n["host"] = (n.get("sni") or n.get("server") or "").strip()
+        if not (n.get("sni") or "").strip():
+            n["sni"] = (n.get("host") or n.get("server") or "").strip()
+        if not (n.get("fp") or "").strip():
+            n["fp"] = "chrome"
+    if n.get("tls") or n.get("reality"):
+        if not (n.get("sni") or "").strip():
+            n["sni"] = (n.get("host") or n.get("server") or "").strip()
+        if not (n.get("fp") or "").strip():
+            n["fp"] = "chrome"
     return n
 
 
@@ -1166,8 +1173,7 @@ def _sb_tls(node: dict) -> dict | None:
         # 多数机场节点证书与 IP 不一致，默认允许不安全（与 v2rayN 常见设置一致）
         "insecure": True if node.get("allow_insecure", True) else False,
     }
-    if node.get("fp"):
-        tls["utls"] = {"enabled": True, "fingerprint": node["fp"]}
+    tls["utls"] = {"enabled": True, "fingerprint": (node.get("fp") or "chrome")}
     if node.get("alpn"):
         alpn = node["alpn"]
         tls["alpn"] = [a.strip() for a in str(alpn).split(",") if a.strip()]
@@ -2285,8 +2291,8 @@ class NetBridgeApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title(f"NetBridge {APP_VERSION}")
-        self.geometry("460x760")
-        self.minsize(420, 680)
+        self.geometry("480x780")
+        self.minsize(460, 700)
         self.configure(bg=BG)
         self._set_window_icon()
 
@@ -2589,7 +2595,7 @@ class NetBridgeApp(tk.Tk):
         cv = tk.Canvas(parent, width=size, height=size, bg=pbg, highlightthickness=0, bd=0)
         pad = 2
         oid = cv.create_oval(pad, pad, size - pad, size - pad, fill=sk["card"], outline=sk.get("accent", "#D0D5DD"), width=1)
-        tid = cv.create_text(size // 2, size // 2, text=text, fill=sk["text"], font=("Segoe UI", self._fs(11), "bold"))
+        tid = cv.create_text(size // 2, size // 2, text=text, fill=sk["text"], font=("Segoe UI", self._fs(10), "bold"))
 
         def on_enter(_):
             cv.itemconfig(oid, fill=sk["accent"])
@@ -2953,9 +2959,9 @@ class NetBridgeApp(tk.Tk):
         )
         self.lbl_proxy.pack()
 
-        # bottom nav：圆形按钮，底色与窗口一致
+        # bottom nav：圆形按钮，缩小间距避免最右侧被裁切
         bottom = tk.Frame(self, bg=BG, highlightthickness=0, bd=0)
-        bottom.pack(fill="x", padx=12, pady=(8, 8))
+        bottom.pack(fill="x", padx=6, pady=(6, 6))
         self._bottom_bar = bottom
         for text, cmd in [
             ("节点", self._open_nodes),
@@ -2966,8 +2972,8 @@ class NetBridgeApp(tk.Tk):
             ("托盘", self._hide_to_tray),
             ("日志", self._show_log),
         ]:
-            b = self._circle_nav_btn(bottom, text, cmd, size=58)
-            b.pack(side="left", expand=True, padx=3, pady=6)
+            b = self._circle_nav_btn(bottom, text, cmd, size=48)
+            b.pack(side="left", expand=True, padx=1, pady=4)
 
         self.lbl_status = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=SECONDARY, wraplength=400)
         self.lbl_status.pack(pady=(0, 10))
@@ -3116,14 +3122,11 @@ class NetBridgeApp(tk.Tk):
         self._refresh()
 
     def _toggle(self):
-
+        # 大圆按钮只负责连接；断开请用底部「断开」
         if self.status == "connected":
-            stop_core()
-            self.status = "disconnected"
-            self._refresh()
+            self.lbl_status.config(text="已连接。断开请点底部「断开」按钮")
             return
         if self.status == "connecting":
-            # 允许取消卡住的连接中状态
             try:
                 stop_core()
             except Exception:
@@ -3145,6 +3148,19 @@ class NetBridgeApp(tk.Tk):
             try:
                 def log(msg):
                     self.after(0, lambda m=msg: self.lbl_status.config(text=m))
+
+                # TUN 需要管理员；无权限时自动退回系统代理模式
+                if self.settings.get("tun") and is_windows():
+                    try:
+                        import ctypes
+                        if not bool(ctypes.windll.shell32.IsUserAnAdmin()):
+                            self.settings["tun"] = False
+                            self.tun_var.set(False)
+                            self.after(0, lambda: self.lbl_status.config(
+                                text="TUN 需要管理员权限，已改用系统代理"
+                            ))
+                    except Exception:
+                        pass
 
                 start_core(self.core_var.get(), node, self.settings, log)
 
