@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.8"
+APP_VERSION = "1.3.9"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -573,6 +573,13 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
         host = node.get("host") or node.get("sni") or ""
         if host:
             ws_opts["headers"] = {"Host": host}
+        # /?ed=2560 → max-early-data（Clash Meta / mihomo）
+        m_ed = re.search(r"[?&]ed=(\d+)", str(path))
+        if m_ed:
+            ws_opts["max-early-data"] = int(m_ed.group(1))
+            ws_opts["early-data-header-name"] = "Sec-WebSocket-Protocol"
+            # 部分内核要求 path 去掉 query
+            ws_opts["path"] = str(path).split("?")[0] or "/"
         proxy["ws-opts"] = ws_opts
     elif net == "grpc":
         proxy["network"] = "grpc"
@@ -766,19 +773,50 @@ def parse_ss(url: str) -> dict | None:
 
 
 def _parse_fragment_param(raw: str) -> dict | None:
-    """解析 v2rayN fragment 参数，如 1,40-60,30-50,tlshello"""
+    """解析 v2rayN fragment 参数。
+    支持: tlshello,40-60,30-50 或 1,40-60,30-50,tlshello
+    """
     if not raw:
         return None
-    parts = [x.strip() for x in str(raw).split(",")]
-    # 常见: 1,40-60,30-50,tlshello  或  tlshello,1-3,100-200
-    length, interval, packets = "40-60", "30-50", "tlshello"
-    if len(parts) >= 4 and parts[0] in ("1", "true", "yes"):
-        length, interval, packets = parts[1], parts[2], parts[3]
-    elif len(parts) >= 3 and not parts[0].isdigit():
-        packets, length, interval = parts[0], parts[1], parts[2]
-    elif len(parts) == 1 and parts[0]:
+    raw = str(raw).strip()
+    parts = [x.strip() for x in raw.split(",") if x.strip()]
+    if not parts:
+        return None
+    packets = "tlshello"
+    length = "40-60"
+    interval = "30-50"
+    # 形如 1,40-60,30-50,tlshello
+    if parts[-1].lower() in ("tlshello", "1", "true", "yes"):
+        if parts[-1].lower() == "tlshello":
+            packets = "tlshello"
+        if len(parts) >= 3:
+            length = parts[-3] if "-" in parts[-3] else parts[1] if len(parts) > 1 else length
+            interval = parts[-2] if "-" in parts[-2] else parts[2] if len(parts) > 2 else interval
+        # better parse by position
+        if len(parts) == 4:
+            # 1,40-60,30-50,tlshello
+            length = parts[1]
+            interval = parts[2]
+            packets = parts[3] if parts[3].isalpha() or "tls" in parts[3].lower() else "tlshello"
+        elif len(parts) == 3:
+            # tlshello,40-60,30-50 或 40-60,30-50,tlshello
+            if "tls" in parts[0].lower() or parts[0].isalpha():
+                packets, length, interval = parts[0], parts[1], parts[2]
+            else:
+                length, interval, packets = parts[0], parts[1], parts[2]
+    elif "tls" in parts[0].lower() or parts[0].isalpha():
         packets = parts[0]
-    return {"packets": packets or "tlshello", "length": length or "40-60", "interval": interval or "30-50"}
+        if len(parts) > 1:
+            length = parts[1]
+        if len(parts) > 2:
+            interval = parts[2]
+    else:
+        if len(parts) >= 2:
+            length, interval = parts[0], parts[1]
+        if len(parts) >= 3:
+            packets = parts[2]
+    return {"packets": packets, "length": length, "interval": interval}
+
 
 
 def parse_trojan(url: str) -> dict | None:
@@ -797,7 +835,7 @@ def parse_trojan(url: str) -> dict | None:
             host = sni
         if not sni:
             sni = host or (p.hostname or "")
-        allow = (q.get("allowInsecure") or q.get("allow_insecure") or q.get("insecure") or ["1"])[0]
+        allow = (q.get("allowInsecure") or q.get("allow_insecure") or q.get("insecure") or ["0"])[0]
         node = {
             "name": name,
             "protocol": "trojan",
@@ -1143,7 +1181,7 @@ def normalize_node(node: dict) -> dict:
     if proto == "trojan":
         n["tls"] = True
         if n.get("allow_insecure") is None:
-            n["allow_insecure"] = True
+            n["allow_insecure"] = False  # 对齐 v2rayN 默认关
     if net in ("ws", "grpc"):
         if not (n.get("path") or "").strip():
             n["path"] = "/"
@@ -1184,6 +1222,10 @@ def _sb_tls(node: dict) -> dict | None:
             "short_id": node.get("sid") or "",
         }
         tls["insecure"] = False
+    ech = (node.get("ech") or "").strip()
+    if ech and not node.get("reality"):
+        # sing-box 1.12+ ECH：query 形式
+        tls["ech"] = {"enabled": True, "config": [ech] if not ech.startswith("{") else ech}
     return tls
 
 
@@ -1430,17 +1472,18 @@ def _xray_stream(node: dict) -> dict:
         }
     elif need_tls:
         stream["security"] = "tls"
-        # 默认 allowInsecure=True，对齐 v2rayN 常见可用配置
-        allow = node.get("allow_insecure")
-        if allow is None:
-            allow = True
-        # Xray 26+ 已移除 allowInsecure，改为仅依赖正确 SNI + fingerprint
+        # 对齐 v2rayN：正确 SNI + chrome 指纹；有 ECH 时写入 echConfigList
         tls: dict = {
             "serverName": node.get("sni") or node.get("host") or node.get("server") or "",
             "fingerprint": node.get("fp") or "chrome",
         }
-        if node.get("alpn"):
-            tls["alpn"] = [a.strip() for a in str(node["alpn"]).split(",") if a.strip()]
+        alpn = (node.get("alpn") or "").strip()
+        if alpn:
+            tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
+        ech = (node.get("ech") or "").strip()
+        if ech:
+            # v2rayN: cloudflare-ech.com+https://dns.alidns.com/dns-query
+            tls["echConfigList"] = ech
         stream["tlsSettings"] = tls
 
     return stream
@@ -1723,7 +1766,12 @@ class SystemProxy:
             if enable:
                 # 对齐 v2rayN：仅 ProxyServer + 短 ProxyOverride，分流由核心完成
                 winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1)
-                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, f"{host}:{port}")
+                # 分协议格式，Edge/Chrome 更稳定
+                proxy_val = (
+                    f"http={host}:{port};https={host}:{port};"
+                    f"ftp={host}:{port};socks={host}:{port}"
+                )
+                winreg.SetValueEx(key, "ProxyServer", 0, winreg.REG_SZ, proxy_val)
                 winreg.SetValueEx(key, "ProxyOverride", 0, winreg.REG_SZ, windows_proxy_override(route_mode))
                 try:
                     winreg.DeleteValue(key, "AutoConfigURL")
@@ -1740,8 +1788,9 @@ class SystemProxy:
         try:
             import ctypes
             internet_set_option = ctypes.windll.Wininet.InternetSetOptionW
-            internet_set_option(0, 39, 0, 0)  # SETTINGS_CHANGED
-            internet_set_option(0, 37, 0, 0)  # REFRESH
+            internet_set_option(0, 39, 0, 0)  # INTERNET_OPTION_SETTINGS_CHANGED
+            internet_set_option(0, 37, 0, 0)  # INTERNET_OPTION_REFRESH
+            internet_set_option(0, 38, 0, 0)  # INTERNET_OPTION_PROXY_SETTINGS_CHANGED
         except Exception:
             pass
         # WinHTTP 较慢，放到后台，避免拖慢「连接」
