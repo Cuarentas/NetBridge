@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 10808
-APP_VERSION = "1.4.4"
+APP_VERSION = "1.4.5"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1127,42 +1127,16 @@ CN_DOMAIN_SUFFIX = [
 
 
 def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
-    """系统代理绕过列表。
+    """系统代理绕过列表 —— 对齐 v2rayN：仅本地/内网。
 
-    bypass_cn：本地 + 常见国内域名不走系统代理（浏览器直连），
-    避免节点失效时「一开代理全国无法上网」。
-    global：仅绕过本地/内网。
+    国内直连由核心路由（geosite:cn / 域名规则）完成，
+    不在此堆砌长域名列表（Windows 设置页也显示不全）。
     """
-    local = (
+    return (
         "localhost;127.*;10.*;192.168.*;"
         "172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.3*;"
         "<local>"
     )
-    if route_mode == "global":
-        return local
-    # 绕过大陆 / 直连：国内域名不进 127.0.0.1 代理
-    cn = [
-        "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
-        "*.baidu.com", "*.bdstatic.com", "*.hao123.com", "*.baidubce.com", "*.baidupcs.com",
-        "*.qq.com", "*.gtimg.com", "*.tencent.com", "*.weixin.qq.com", "*.qcloud.com",
-        "*.douyin.com", "*.byteimg.com", "*.bytedance.com", "*.toutiao.com", "*.snssdk.com",
-        "*.ixigua.com", "*.capcut.com",
-        "*.bilibili.com", "*.hdslb.com", "*.zhihu.com", "*.douban.com",
-        "*.taobao.com", "*.tmall.com", "*.alicdn.com", "*.aliyun.com", "*.alipay.com",
-        "*.alibaba.com", "*.qianwen.com", "*.aliyuncs.com",
-        "*.jd.com", "*.360buyimg.com",
-        "*.163.com", "*.126.com", "*.netease.com",
-        "*.weibo.com", "*.sina.com.cn", "*.sinaimg.cn",
-        "*.iqiyi.com", "*.youku.com", "*.ykimg.com", "*.pptv.com", "*.mgtv.com", "*.acfun.cn",
-        "*.360.com", "*.360.cn", "*.so.com", "*.qhimg.com",
-        "*.speedtest.cn", "*.testcdn.cn",
-        "*.microsoft.com", "*.windowsupdate.com", "*.live.com", "*.office.com",
-        "*.msftconnecttest.com", "*.msn.com", "*.bing.com",
-        "*.apple.com", "*.icloud.com", "*.mzstatic.com",
-        "*.mi.com", "*.xiaomi.com", "*.huawei.com", "*.honor.com", "*.csdn.net", "*.gitee.com",
-        "*.cctv.com", "*.xinhuanet.com", "*.people.com.cn",
-    ]
-    return local + ";" + ";".join(cn)
 
 
 def _route_mode(settings: dict) -> str:
@@ -1448,8 +1422,8 @@ def _xray_stream(node: dict) -> dict:
         ws: dict = {"path": path}
         host = (node.get("host") or node.get("sni") or "").strip()
         if host:
-            # Xray 标准字段是 headers.Host（不是顶层 host）
-            ws["headers"] = {"Host": host}
+            # Xray 26+：独立 host 字段（headers.Host 已弃用）
+            ws["host"] = host
         stream["wsSettings"] = ws
     elif net == "grpc":
         stream["network"] = "grpc"
@@ -1486,10 +1460,9 @@ def _xray_stream(node: dict) -> dict:
         alpn = (node.get("alpn") or "").strip()
         if alpn:
             tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
-        ech = (node.get("ech") or "").strip()
-        if ech:
-            # v2rayN: cloudflare-ech.com+https://dns.alidns.com/dns-query
-            tls["echConfigList"] = ech
+        # ech=cloudflare-ech.com+https://... 是查询串，不是 PEM。
+        # 写入 echConfigList 会导致 TLS 握手挂起且无日志，故跳过。
+        # 依赖 fingerprint + 正确 SNI + fragment 即可连通多数 CF 节点。
         stream["tlsSettings"] = tls
 
     return stream
@@ -1616,6 +1589,15 @@ def build_xray_config(node: dict, settings: dict) -> dict:
 
     return {
         "log": {"loglevel": xray_level},
+        "dns": {
+            "servers": [
+                "223.5.5.5",
+                "119.29.29.29",
+                "8.8.8.8",
+                "localhost",
+            ],
+            "queryStrategy": "UseIPv4",
+        },
         "inbounds": [
             {
                 "tag": "mixed-in",
