@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -569,17 +569,14 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
     if net in ("ws", "websocket"):
         proxy["network"] = "ws"
         path = node.get("path") or "/"
-        ws_opts = {"path": path}
+        ws_opts = {"path": path}  # 保留 /?ed=2560 原样（对齐 v2rayN）
         host = node.get("host") or node.get("sni") or ""
         if host:
             ws_opts["headers"] = {"Host": host}
-        # /?ed=2560 → max-early-data（Clash Meta / mihomo）
         m_ed = re.search(r"[?&]ed=(\d+)", str(path))
         if m_ed:
             ws_opts["max-early-data"] = int(m_ed.group(1))
             ws_opts["early-data-header-name"] = "Sec-WebSocket-Protocol"
-            # 部分内核要求 path 去掉 query
-            ws_opts["path"] = str(path).split("?")[0] or "/"
         proxy["ws-opts"] = ws_opts
     elif net == "grpc":
         proxy["network"] = "grpc"
@@ -588,7 +585,8 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
     if node.get("tls") or node.get("reality") or net in ("ws", "grpc"):
         if proto != "ss":
             proxy["tls"] = True
-        proxy["skip-cert-verify"] = True
+        # 对齐 v2rayN：默认校验证书
+        proxy["skip-cert-verify"] = bool(node.get("allow_insecure"))
         sn = (node.get("sni") or node.get("host") or "").strip()
         if sn:
             proxy["servername"] = sn
@@ -610,16 +608,22 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
     ]
     if mode == "bypass_cn":
         for d in (
-            "cn", "baidu.com", "qq.com", "weixin.qq.com", "gtimg.com",
-            "douyin.com", "byteimg.com", "bilibili.com", "hdslb.com",
-            "zhihu.com", "taobao.com", "alicdn.com", "aliyun.com",
-            "jd.com", "163.com", "126.com", "weibo.com", "iqiyi.com",
-            "microsoft.com", "windowsupdate.com", "apple.com", "icloud.com",
+            "cn", "baidu.com", "bdstatic.com", "hao123.com", "haosou.com",
+            "qq.com", "weixin.qq.com", "gtimg.com", "tencent.com", "qcloud.com",
+            "douyin.com", "byteimg.com", "bytedance.com", "toutiao.com",
+            "bilibili.com", "hdslb.com", "zhihu.com",
+            "taobao.com", "tmall.com", "alicdn.com", "aliyun.com", "alipay.com",
+            "jd.com", "360buyimg.com", "163.com", "126.com", "netease.com",
+            "weibo.com", "sina.com.cn", "iqiyi.com", "youku.com", "ykimg.com",
+            "360.com", "360.cn", "so.com", "qhimg.com",
+            "microsoft.com", "windowsupdate.com", "live.com", "office.com",
+            "apple.com", "icloud.com", "mzstatic.com",
+            "csdn.net", "mi.com", "xiaomi.com", "huawei.com",
         ):
             rules.append(f"DOMAIN-SUFFIX,{d},DIRECT")
-        # 若存在 geosite.dat 再追加（不依赖 MMDB）
         if (BIN_DIR / "geosite.dat").exists():
             rules.append("GEOSITE,CN,DIRECT")
+            rules.append("GEOSITE,geolocation-cn,DIRECT")
         rules.append("MATCH,PROXY")
         clash_mode = "rule"
     elif mode == "direct":
@@ -637,15 +641,16 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
         "log-level": (settings.get("log_level") or "info"),
         "ipv6": False,
         "external-controller": "",
-        "geodata-mode": True,  # 优先使用 .dat，减少对 MMDB 依赖
+        "geodata-mode": bool((BIN_DIR / "geosite.dat").exists()),
         "geo-auto-update": False,
         "find-process-mode": "off",
+        # 仅用国内 DNS，避免 8.8.8.8 超时拖慢所有网页
         "dns": {
             "enable": True,
             "enhanced-mode": "redir-host",
-            "nameserver": ["system", "223.5.5.5"],
-            "fallback": ["8.8.8.8", "1.1.1.1"],
-            "fallback-filter": {"geoip": False},
+            "default-nameserver": ["223.5.5.5", "119.29.29.29"],
+            "nameserver": ["223.5.5.5", "119.29.29.29", "system"],
+            "proxy-server-nameserver": ["223.5.5.5"],
         },
         "proxies": [proxy],
         "proxy-groups": [{"name": "PROXY", "type": "select", "proxies": ["proxy", "DIRECT"]}],
