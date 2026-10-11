@@ -65,8 +65,8 @@ CONFIG_FILE = RUNTIME / "config.json"
 SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
-MIXED_PORT = 7890
-APP_VERSION = "1.4.2"
+MIXED_PORT = 10808
+APP_VERSION = "1.4.3"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -126,8 +126,8 @@ def load_settings() -> dict:
     s = load_json(SETTINGS_FILE, {})
     out = dict(DEFAULT_SETTINGS)
     out.update(s)
-    # 统一默认端口 7890（1314 在部分 Windows 环境无法监听）
-    if out.get("mixed_port") in (1314, "1314", None, 7890, "7890"):
+    # 默认对齐 v2rayN：10808；旧 7890/1314 自动迁移
+    if out.get("mixed_port") in (1314, "1314", None, 7890, "7890", 10808, "10808"):
         out["mixed_port"] = MIXED_PORT
     return out
 
@@ -1127,40 +1127,38 @@ CN_DOMAIN_SUFFIX = [
 
 
 def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
-    """系统代理绕过列表（对齐 v2rayN：仅本地/内网）。
-    国内直连交给核心路由，避免过长 ProxyOverride 与 PAC dnsResolve 拖慢网页。
+    """系统代理绕过列表。
+
+    bypass_cn：本地 + 常见国内域名不走系统代理（浏览器直连），
+    避免节点失效时「一开代理全国无法上网」。
+    global：仅绕过本地/内网。
     """
-    return (
+    local = (
         "localhost;127.*;10.*;192.168.*;"
         "172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.3*;"
         "<local>"
     )
-    # 覆盖常见国内视频/社交/购物（非 .cn 后缀也必须写）
-    extra = [
+    if route_mode == "global":
+        return local
+    # 绕过大陆 / 直连：国内域名不进 127.0.0.1 代理
+    cn = [
         "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
-        # 字节 / 抖音
-        "*.douyin.com", "*.iesdouyin.com", "*.byteimg.com", "*.bytedance.com",
-        "*.douyinpic.com", "*.douyinvod.com", "*.snssdk.com", "*.toutiao.com",
-        "*.ixigua.com", "*.capcut.com",
-        # 爱奇艺 / 腾讯视频 / 优酷
-        "*.iqiyi.com", "*.iqiyipic.com", "*.qy.net", "*.ppqyw.com",
-        "*.video.qq.com", "*.v.qq.com", "*.gtimg.com", "*.tencent.com", "*.qq.com",
-        "*.youku.com", "*.ykimg.com", "*.tudou.com",
-        # 百度 / 阿里 / 网易 / 京东
-        "*.baidu.com", "*.bdstatic.com", "*.baidubce.com",
-        "*.aliyun.com", "*.alicdn.com", "*.taobao.com", "*.tmall.com", "*.alipay.com",
-        "*.163.com", "*.126.com", "*.netease.com",
+        "*.baidu.com", "*.bdstatic.com", "*.hao123.com", "*.baidubce.com",
+        "*.qq.com", "*.gtimg.com", "*.tencent.com", "*.weixin.qq.com", "*.qcloud.com",
+        "*.douyin.com", "*.byteimg.com", "*.bytedance.com", "*.toutiao.com", "*.snssdk.com",
+        "*.bilibili.com", "*.hdslb.com", "*.zhihu.com",
+        "*.taobao.com", "*.tmall.com", "*.alicdn.com", "*.aliyun.com", "*.alipay.com",
         "*.jd.com", "*.360buyimg.com",
-        # 其它常用
-        "*.bilibili.com", "*.hdslb.com", "*.zhihu.com", "*.weibo.com", "*.sina.com.cn",
-        "*.mi.com", "*.xiaomi.com", "*.huawei.com", "*.csdn.net",
-        "*.weixin.qq.com", "*.wechat.com", "*.douban.com",
-        "*.360.com", "*.360.cn", "*.so.com", "*.hao123.com",
-        "*.msftconnecttest.com", "*.microsoft.com", "*.windowsupdate.com", "*.live.com",
+        "*.163.com", "*.126.com", "*.netease.com",
+        "*.weibo.com", "*.sina.com.cn",
+        "*.iqiyi.com", "*.youku.com", "*.ykimg.com",
+        "*.360.com", "*.360.cn", "*.so.com", "*.qhimg.com",
+        "*.microsoft.com", "*.windowsupdate.com", "*.live.com", "*.office.com",
+        "*.msftconnecttest.com",
         "*.apple.com", "*.icloud.com", "*.mzstatic.com",
+        "*.mi.com", "*.xiaomi.com", "*.huawei.com", "*.csdn.net",
     ]
-    base.extend(extra)
-    return ";".join(base)
+    return local + ";" + ";".join(cn)
 
 
 def _route_mode(settings: dict) -> str:
@@ -1940,7 +1938,7 @@ def _kill_pid(pid: int):
 
 
 def free_listen_port(port: int, log_cb=None):
-    """释放端口占用（旧核心残留是 7890 bind 失败的主因）。"""
+    """释放端口占用（旧核心残留是 bind 失败的主因）。"""
     for pid in _pids_on_port(port):
         if log_cb:
             log_cb(f"释放端口 {port}，结束 PID={pid}")
