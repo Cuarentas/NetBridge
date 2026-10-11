@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 10808
-APP_VERSION = "1.4.6"
+APP_VERSION = "1.4.7"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1466,9 +1466,9 @@ def _xray_stream(node: dict) -> dict:
             tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
         ech = (node.get("ech") or "").strip()
         if ech:
-            # 对齐 v2rayN：查询串 + 强制拉取 ECH 配置
+            # Xray 26：echForceQuery 类型是 string，不能写 bool
             tls["echConfigList"] = ech
-            tls["echForceQuery"] = True
+            tls["echForceQuery"] = "100ms"
         stream["tlsSettings"] = tls
 
     return stream
