@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 10808
-APP_VERSION = "1.4.3"
+APP_VERSION = "1.4.4"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1143,20 +1143,24 @@ def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
     # 绕过大陆 / 直连：国内域名不进 127.0.0.1 代理
     cn = [
         "*.cn", "*.com.cn", "*.net.cn", "*.org.cn", "*.edu.cn", "*.gov.cn",
-        "*.baidu.com", "*.bdstatic.com", "*.hao123.com", "*.baidubce.com",
+        "*.baidu.com", "*.bdstatic.com", "*.hao123.com", "*.baidubce.com", "*.baidupcs.com",
         "*.qq.com", "*.gtimg.com", "*.tencent.com", "*.weixin.qq.com", "*.qcloud.com",
         "*.douyin.com", "*.byteimg.com", "*.bytedance.com", "*.toutiao.com", "*.snssdk.com",
-        "*.bilibili.com", "*.hdslb.com", "*.zhihu.com",
+        "*.ixigua.com", "*.capcut.com",
+        "*.bilibili.com", "*.hdslb.com", "*.zhihu.com", "*.douban.com",
         "*.taobao.com", "*.tmall.com", "*.alicdn.com", "*.aliyun.com", "*.alipay.com",
+        "*.alibaba.com", "*.qianwen.com", "*.aliyuncs.com",
         "*.jd.com", "*.360buyimg.com",
         "*.163.com", "*.126.com", "*.netease.com",
-        "*.weibo.com", "*.sina.com.cn",
-        "*.iqiyi.com", "*.youku.com", "*.ykimg.com",
+        "*.weibo.com", "*.sina.com.cn", "*.sinaimg.cn",
+        "*.iqiyi.com", "*.youku.com", "*.ykimg.com", "*.pptv.com", "*.mgtv.com", "*.acfun.cn",
         "*.360.com", "*.360.cn", "*.so.com", "*.qhimg.com",
+        "*.speedtest.cn", "*.testcdn.cn",
         "*.microsoft.com", "*.windowsupdate.com", "*.live.com", "*.office.com",
-        "*.msftconnecttest.com",
+        "*.msftconnecttest.com", "*.msn.com", "*.bing.com",
         "*.apple.com", "*.icloud.com", "*.mzstatic.com",
-        "*.mi.com", "*.xiaomi.com", "*.huawei.com", "*.csdn.net",
+        "*.mi.com", "*.xiaomi.com", "*.huawei.com", "*.honor.com", "*.csdn.net", "*.gitee.com",
+        "*.cctv.com", "*.xinhuanet.com", "*.people.com.cn",
     ]
     return local + ";" + ";".join(cn)
 
@@ -1444,7 +1448,8 @@ def _xray_stream(node: dict) -> dict:
         ws: dict = {"path": path}
         host = (node.get("host") or node.get("sni") or "").strip()
         if host:
-            ws["host"] = host
+            # Xray 标准字段是 headers.Host（不是顶层 host）
+            ws["headers"] = {"Host": host}
         stream["wsSettings"] = ws
     elif net == "grpc":
         stream["network"] = "grpc"
@@ -1596,11 +1601,12 @@ def build_xray_config(node: dict, settings: dict) -> dict:
             "tag": "fragment",
             "protocol": "freedom",
             "settings": {
+                "domainStrategy": "UseIPv4",
                 "fragment": {
                     "packets": frag.get("packets") or "tlshello",
                     "length": frag.get("length") or "40-60",
                     "interval": frag.get("interval") or "30-50",
-                }
+                },
             },
         })
     outbounds.extend([
@@ -1612,20 +1618,16 @@ def build_xray_config(node: dict, settings: dict) -> dict:
         "log": {"loglevel": xray_level},
         "inbounds": [
             {
-                "tag": "http-in",
+                "tag": "mixed-in",
                 "port": port,
                 "listen": listen,
-                "protocol": "http",
-                "settings": {"allowTransparent": False},
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": False},
-            },
-            {
-                "tag": "socks-in",
-                "port": port + 1,
-                "listen": listen,
-                "protocol": "socks",
+                "protocol": "mixed",
                 "settings": {"udp": True},
-                "sniffing": {"enabled": True, "destOverride": ["http", "tls", "quic"], "routeOnly": False},
+                "sniffing": {
+                    "enabled": True,
+                    "destOverride": ["http", "tls", "quic"],
+                    "routeOnly": False,
+                },
             },
         ],
         "outbounds": outbounds,
