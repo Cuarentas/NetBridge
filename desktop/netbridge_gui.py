@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 10808
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.6"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1127,16 +1127,20 @@ CN_DOMAIN_SUFFIX = [
 
 
 def windows_proxy_override(route_mode: str = "bypass_cn") -> str:
-    """系统代理绕过列表 —— 对齐 v2rayN：仅本地/内网。
+    """系统代理绕过列表。
 
-    国内直连由核心路由（geosite:cn / 域名规则）完成，
-    不在此堆砌长域名列表（Windows 设置页也显示不全）。
+    - 本地/内网始终绕过
+    - 绕过大陆时额外绕过 *.cn / *.com.cn，浏览器直连国内，
+      避免「一开代理国内全挂」；列表极短，设置页干净
     """
-    return (
+    local = (
         "localhost;127.*;10.*;192.168.*;"
         "172.16.*;172.17.*;172.18.*;172.19.*;172.2*;172.3*;"
         "<local>"
     )
+    if route_mode == "global":
+        return local
+    return local + ";*.cn;*.com.cn;*.net.cn;*.org.cn;*.edu.cn;*.gov.cn"
 
 
 def _route_mode(settings: dict) -> str:
@@ -1460,9 +1464,11 @@ def _xray_stream(node: dict) -> dict:
         alpn = (node.get("alpn") or "").strip()
         if alpn:
             tls["alpn"] = [a.strip() for a in alpn.split(",") if a.strip()]
-        # ech=cloudflare-ech.com+https://... 是查询串，不是 PEM。
-        # 写入 echConfigList 会导致 TLS 握手挂起且无日志，故跳过。
-        # 依赖 fingerprint + 正确 SNI + fragment 即可连通多数 CF 节点。
+        ech = (node.get("ech") or "").strip()
+        if ech:
+            # 对齐 v2rayN：查询串 + 强制拉取 ECH 配置
+            tls["echConfigList"] = ech
+            tls["echForceQuery"] = True
         stream["tlsSettings"] = tls
 
     return stream
@@ -1581,6 +1587,9 @@ def build_xray_config(node: dict, settings: dict) -> dict:
                     "interval": frag.get("interval") or "30-50",
                 },
             },
+            "streamSettings": {
+                "sockopt": {"tcpNoDelay": True, "tcpKeepAliveInterval": 0},
+            },
         })
     outbounds.extend([
         {"tag": "direct", "protocol": "freedom"},
@@ -1588,12 +1597,11 @@ def build_xray_config(node: dict, settings: dict) -> dict:
     ])
 
     return {
-        "log": {"loglevel": xray_level},
+        "log": {"loglevel": xray_level, "dnsLog": False},
         "dns": {
             "servers": [
                 "223.5.5.5",
                 "119.29.29.29",
-                "8.8.8.8",
                 "localhost",
             ],
             "queryStrategy": "UseIPv4",
@@ -1620,7 +1628,7 @@ def build_xray_config(node: dict, settings: dict) -> dict:
 def _xray_routing(mode: str) -> dict:
     if mode == "direct":
         return {
-            "domainStrategy": "IPIfNonMatch",
+            "domainStrategy": "AsIs",
             "rules": [{"type": "field", "network": "tcp,udp", "outboundTag": "direct"}],
         }
     private_ips = [
