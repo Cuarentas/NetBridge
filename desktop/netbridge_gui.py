@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.7"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -592,15 +592,33 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
                 "short-id": node.get("sid") or "",
             }
 
-    rules = ["GEOIP,PRIVATE,DIRECT"]
+    # 不使用 GEOIP/MMDB，避免 Country.mmdb 缺失或损坏导致进程退出
+    rules = [
+        "IP-CIDR,127.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,10.0.0.0/8,DIRECT,no-resolve",
+        "IP-CIDR,172.16.0.0/12,DIRECT,no-resolve",
+        "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
+        "IP-CIDR,169.254.0.0/16,DIRECT,no-resolve",
+    ]
     if mode == "bypass_cn":
-        rules += ["GEOIP,CN,DIRECT", "GEOSITE,CN,DIRECT", "MATCH,PROXY"]
+        for d in (
+            "cn", "baidu.com", "qq.com", "weixin.qq.com", "gtimg.com",
+            "douyin.com", "byteimg.com", "bilibili.com", "hdslb.com",
+            "zhihu.com", "taobao.com", "alicdn.com", "aliyun.com",
+            "jd.com", "163.com", "126.com", "weibo.com", "iqiyi.com",
+            "microsoft.com", "windowsupdate.com", "apple.com", "icloud.com",
+        ):
+            rules.append(f"DOMAIN-SUFFIX,{d},DIRECT")
+        # 若存在 geosite.dat 再追加（不依赖 MMDB）
+        if (BIN_DIR / "geosite.dat").exists():
+            rules.append("GEOSITE,CN,DIRECT")
+        rules.append("MATCH,PROXY")
         clash_mode = "rule"
     elif mode == "direct":
         rules = ["MATCH,DIRECT"]
         clash_mode = "direct"
     else:
-        rules += ["MATCH,PROXY"]
+        rules.append("MATCH,PROXY")
         clash_mode = "global"
 
     cfg = {
@@ -611,10 +629,15 @@ def build_mihomo_config(node: dict, settings: dict) -> dict:
         "log-level": (settings.get("log_level") or "info"),
         "ipv6": False,
         "external-controller": "",
+        "geodata-mode": True,  # 优先使用 .dat，减少对 MMDB 依赖
+        "geo-auto-update": False,
+        "find-process-mode": "off",
         "dns": {
             "enable": True,
-            "enhanced-mode": "fake-ip",
-            "nameserver": ["system", "8.8.8.8"],
+            "enhanced-mode": "redir-host",
+            "nameserver": ["system", "223.5.5.5"],
+            "fallback": ["8.8.8.8", "1.1.1.1"],
+            "fallback-filter": {"geoip": False},
         },
         "proxies": [proxy],
         "proxy-groups": [{"name": "PROXY", "type": "select", "proxies": ["proxy", "DIRECT"]}],
@@ -1287,7 +1310,6 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
         })
 
     # HTTPS CONNECT 依赖 DNS；避免 DNS 全走代理导致解析卡死
-    outbound.setdefault("domain_strategy", "prefer_ipv4")
     cfg = {
         "log": {"level": log_level, "timestamp": True},
         "dns": {
@@ -1321,7 +1343,6 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
             ],
             "final": "local",
             "strategy": "prefer_ipv4",
-            "independent_cache": True,
         },
         "inbounds": inbounds,
         "outbounds": [
@@ -1338,21 +1359,18 @@ def _singbox_route(mode: str) -> dict:
     sniff_rules = [
         {"action": "sniff", "timeout": "300ms"},
     ]
+    # sing-box 1.12+ 要求 default_domain_resolver
+    base = {
+        "auto_detect_interface": True,
+        "default_domain_resolver": "local",
+    }
     if mode == "direct":
-        return {
-            "auto_detect_interface": True,
-            "final": "direct",
-            "rules": sniff_rules,
-        }
+        return {**base, "final": "direct", "rules": sniff_rules}
     if mode == "global":
-        return {
-            "auto_detect_interface": True,
-            "final": "proxy",
-            "rules": sniff_rules,
-        }
+        return {**base, "final": "proxy", "rules": sniff_rules}
     # bypass_cn：局域网与国内域名直连，其余走代理
     return {
-        "auto_detect_interface": True,
+        **base,
         "final": "proxy",
         "rules": sniff_rules + [
             {"ip_is_private": True, "outbound": "direct"},
@@ -1516,10 +1534,9 @@ def build_xray_config(node: dict, settings: dict) -> dict:
     outbounds = [outbound]
     frag = node.get("fragment")
     if not isinstance(frag, dict):
-        # 机场 CF / ed= 节点默认开启 tlshello 分片
-        path = str(node.get("path") or "")
-        host = str(node.get("host") or node.get("sni") or "")
-        if "ed=" in path or "cloudflare" in host or "dpdns" in host or "pages.dev" in host:
+        # ws/grpc 节点默认开启 tlshello 分片（对齐 v2rayN 常见可用配置）
+        net = (node.get("network") or "tcp").lower()
+        if net in ("ws", "websocket", "grpc") or node.get("tls") or node.get("reality"):
             frag = {"packets": "tlshello", "length": "40-60", "interval": "30-50"}
     if isinstance(frag, dict) and frag.get("packets"):
         stream = outbound.setdefault("streamSettings", {})
@@ -2572,7 +2589,7 @@ class NetBridgeApp(tk.Tk):
         cv = tk.Canvas(parent, width=size, height=size, bg=pbg, highlightthickness=0, bd=0)
         pad = 2
         oid = cv.create_oval(pad, pad, size - pad, size - pad, fill=sk["card"], outline=sk.get("accent", "#D0D5DD"), width=1)
-        tid = cv.create_text(size // 2, size // 2, text=text, fill=sk["text"], font=("Segoe UI", self._fs(8), "bold"))
+        tid = cv.create_text(size // 2, size // 2, text=text, fill=sk["text"], font=("Segoe UI", self._fs(11), "bold"))
 
         def on_enter(_):
             cv.itemconfig(oid, fill=sk["accent"])
@@ -2606,7 +2623,7 @@ class NetBridgeApp(tk.Tk):
         # 已取消连接动画
         self._stop_connect_anim()
         try:
-            self.canvas.coords(self.btn_id, 10, 10, 170, 170)
+            self.canvas.coords(self.btn_id, 4, 4, 172, 172)
             self.canvas.itemconfig(self.btn_id, fill=ORANGE)
             self.canvas.itemconfig(self.txt_id, text="连接中")
         except Exception:
@@ -2620,7 +2637,7 @@ class NetBridgeApp(tk.Tk):
                 pass
             self._anim_job = None
         try:
-            self.canvas.coords(self.btn_id, 10, 10, 170, 170)
+            self.canvas.coords(self.btn_id, 4, 4, 172, 172)
         except Exception:
             pass
 
@@ -2918,12 +2935,13 @@ class NetBridgeApp(tk.Tk):
         mid.pack(expand=True, fill="both")
         self._mid_frame = mid
         self.canvas = tk.Canvas(
-            mid, width=168, height=168, bg=BG,
+            mid, width=176, height=176, bg=BG,
             highlightthickness=0, bd=0, highlightbackground=BG, highlightcolor=BG,
         )
         self.canvas.pack(expand=True)
-        self.btn_id = self.canvas.create_oval(4, 4, 164, 164, fill=BLUE, outline="")
-        self.txt_id = self.canvas.create_text(84, 84, text="连接", fill="white", font=("Segoe UI", 18, "bold"))
+        # 正圆：直径 168，留 4px 边距
+        self.btn_id = self.canvas.create_oval(4, 4, 172, 172, fill=BLUE, outline="")
+        self.txt_id = self.canvas.create_text(88, 88, text="连接", fill="white", font=("Segoe UI", 18, "bold"))
         self.canvas.bind("<Button-1>", lambda e: self._toggle())
         # 中部「断开连接」与底部导航重复，已隐藏
         self.btn_disconnect = None
@@ -2948,7 +2966,7 @@ class NetBridgeApp(tk.Tk):
             ("托盘", self._hide_to_tray),
             ("日志", self._show_log),
         ]:
-            b = self._circle_nav_btn(bottom, text, cmd, size=54)
+            b = self._circle_nav_btn(bottom, text, cmd, size=58)
             b.pack(side="left", expand=True, padx=3, pady=6)
 
         self.lbl_status = tk.Label(self, text="", font=("Segoe UI", 9), bg=BG, fg=SECONDARY, wraplength=400)
@@ -3029,7 +3047,7 @@ class NetBridgeApp(tk.Tk):
             try:
                 self.canvas.itemconfig(self.btn_id, fill=colors.get(self.status, sk["accent"]))
                 self.canvas.itemconfig(self.txt_id, text=labels.get(self.status, "连接"))
-                self.canvas.coords(self.btn_id, 10, 10, 170, 170)
+                self.canvas.coords(self.btn_id, 4, 4, 172, 172)
             except Exception:
                 pass
         try:
