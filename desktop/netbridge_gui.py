@@ -66,7 +66,7 @@ SINGBOX_VER = "1.14.3"
 MIHOMO_VER = "1.19.32"
 XRAY_VER = "26.3.27"
 MIXED_PORT = 7890
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 
 def app_version() -> str:
     """界面/UA 版本；与下方 APP_VERSION、README 徽章保持一致即可。"""
@@ -1259,20 +1259,19 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
     port = int(settings.get("mixed_port") or MIXED_PORT)
     listen = "0.0.0.0" if settings.get("allow_lan") else "127.0.0.1"
     log_level = (settings.get("log_level") or "info").lower()
+    # sing-box 1.13+：禁止在 inbound 写 sniff 等遗留字段
     inbounds = [
         {
             "type": "mixed",
             "tag": "mixed-in",
             "listen": listen,
             "listen_port": port,
-            "sniff": True,
         },
         {
             "type": "socks",
             "tag": "socks-in",
             "listen": listen,
             "listen_port": port + 1,
-            "sniff": True,
         },
     ]
 
@@ -1285,7 +1284,6 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
             "auto_route": True,
             "strict_route": False,
             "stack": "mixed",
-            "sniff": True,
         })
 
     # HTTPS CONNECT 依赖 DNS；避免 DNS 全走代理导致解析卡死
@@ -1332,36 +1330,38 @@ def build_singbox_config(node: dict, settings: dict) -> dict:
         ],
         "route": _singbox_route(_route_mode(settings)),
     }
-    # mixed 入站开启嗅探，利于 HTTPS
-    for ib in cfg["inbounds"]:
-        if ib.get("type") in ("mixed", "socks", "http"):
-            ib["sniff"] = True
-            ib["sniff_override_destination"] = True
     return cfg
 
 
 def _singbox_route(mode: str) -> dict:
-    """sing-box 路由：绕过大陆 / 全局 / 全直连。"""
+    """sing-box 路由：绕过大陆 / 全局 / 全直连。sniff 用 rule action（1.13+）。"""
+    sniff_rules = [
+        {"action": "sniff", "timeout": "300ms"},
+    ]
     if mode == "direct":
-        return {"auto_detect_interface": True, "final": "direct"}
+        return {
+            "auto_detect_interface": True,
+            "final": "direct",
+            "rules": sniff_rules,
+        }
     if mode == "global":
         return {
             "auto_detect_interface": True,
             "final": "proxy",
-            "rules": [
-                {"ip_is_private": True, "outbound": "direct"},
-            ],
+            "rules": sniff_rules,
         }
     # bypass_cn：局域网与国内域名直连，其余走代理
     return {
         "auto_detect_interface": True,
         "final": "proxy",
-        "rules": [
+        "rules": sniff_rules + [
             {"ip_is_private": True, "outbound": "direct"},
             {"domain_suffix": CN_DOMAIN_SUFFIX, "outbound": "direct"},
             {"domain_keyword": ["baidu", "alipay", "weixin", "qq.com"], "outbound": "direct"},
         ],
     }
+
+
 
 
 def _xray_stream(node: dict) -> dict:
@@ -2026,12 +2026,17 @@ def start_core(core: str, node: dict, settings: dict, log_cb=None):
 
 
 def log_says_core_started() -> bool:
-    """core.log 是否已出现 started（比 TCP 探测更可靠）。"""
+    """core.log 是否已出现 started / listening（比 TCP 探测更可靠）。"""
     try:
         if not LOG_FILE.exists():
             return False
-        tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-3000:]
-        return ("started" in tail) or ("tcp server started" in tail)
+        tail = LOG_FILE.read_text(encoding="utf-8", errors="replace")[-4000:].lower()
+        keys = (
+            "started", "listening", "proxy listening",
+            "initial configuration complete", "tcp server started",
+            "mixed(http+socks)",
+        )
+        return any(k in tail for k in keys)
     except Exception:
         return False
 
@@ -2054,9 +2059,12 @@ def test_proxy_connectivity(port: int = MIXED_PORT, timeout: float = 3.0) -> tup
     import urllib.request
 
     # 1) 端口探测；失败时若日志已 started 则继续（避免 Windows 误报）
-    port_ok = wait_port_open("127.0.0.1", port, tries=20, delay=0.25)
-    if not port_ok and not log_says_core_started():
+    port_ok = wait_port_open("127.0.0.1", port, tries=25, delay=0.2)
+    started = log_says_core_started()
+    if not port_ok and not started:
         return False, f"本地端口 127.0.0.1:{port} 未在监听（核心可能已退出，请看日志）"
+    if not port_ok and started:
+        port_ok = True  # 日志已确认监听，跳过 Windows 误报
 
     # 2) 经 HTTP 代理访问（不走环境变量代理，避免套娃）
     url = "http://www.gstatic.com/generate_204"
@@ -2482,21 +2490,23 @@ class NetBridgeApp(tk.Tk):
         except Exception:
             pass
         try:
+            # 连接圆区域必须与渐变底色一致，禁止白色/卡片色方框
+            fill = base_bg
             if hasattr(self, "canvas"):
-                try:
-                    root_bg = self.cget("bg")
-                    self.canvas.configure(bg=root_bg, highlightthickness=0, highlightbackground=root_bg)
-                    if hasattr(self, "_mid_frame"):
-                        self._mid_frame.configure(bg=root_bg)
-                    if hasattr(self, "_bottom_bar"):
-                        self._bottom_bar.configure(bg=root_bg)
-                        for ch in self._bottom_bar.winfo_children():
-                            try:
-                                ch.configure(bg=root_bg)
-                            except Exception:
-                                pass
-                except Exception:
-                    self.canvas.configure(bg=card_bg)
+                self.canvas.configure(
+                    bg=fill, highlightthickness=0,
+                    highlightbackground=fill, highlightcolor=fill,
+                )
+            if hasattr(self, "_mid_frame"):
+                self._mid_frame.configure(bg=fill, highlightthickness=0, bd=0)
+            if hasattr(self, "_bottom_bar"):
+                self._bottom_bar.configure(bg=fill)
+                for ch in self._bottom_bar.winfo_children():
+                    try:
+                        ch.configure(bg=fill, highlightthickness=0)
+                    except Exception:
+                        pass
+            self._canvas_fill = fill
         except Exception:
             pass
 
@@ -2507,7 +2517,7 @@ class NetBridgeApp(tk.Tk):
             # 半透明卡片感：主画布用浅色
             cbg = "#FFFFFF" if sk.get("gradient") else sk["bg"]
             if hasattr(self, "canvas"):
-                self.canvas.configure(bg=cbg)
+                self.canvas.configure(bg=getattr(self, "_canvas_fill", cbg))
         except Exception:
             try:
                 self.configure(bg=sk["bg"])
@@ -2966,7 +2976,33 @@ class NetBridgeApp(tk.Tk):
         except Exception:
             pass
 
+
+    def _sync_canvas_bg(self):
+        """连接圆按钮区域与窗口同色，去掉白色方框。"""
+        try:
+            fill = getattr(self, "_canvas_fill", None) or self.cget("bg")
+            # 避免纯白/近白
+            if str(fill).lower() in ("#ffffff", "white", "#f5eeff", "#f2f2f7", "#ffffff"):
+                fill = "#D4B8F0"
+            if hasattr(self, "canvas"):
+                self.canvas.configure(
+                    bg=fill, highlightthickness=0,
+                    highlightbackground=fill, highlightcolor=fill,
+                )
+            if hasattr(self, "_mid_frame"):
+                self._mid_frame.configure(bg=fill, highlightthickness=0, bd=0)
+            if hasattr(self, "_bottom_bar"):
+                self._bottom_bar.configure(bg=fill)
+                for ch in self._bottom_bar.winfo_children():
+                    try:
+                        ch.configure(bg=fill, highlightthickness=0)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _refresh(self):
+        self._sync_canvas_bg()
         n = self.current_node()
         name = n.get("name") or f"{n.get('server', '')}:{n.get('port', '')}"
         net = n.get("network") or "tcp"
